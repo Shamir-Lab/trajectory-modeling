@@ -238,6 +238,17 @@ def compute_biomarker(
     print(f"\n✓ Trajectory probabilities computed!")
 
     prob_map = {f'trajtype_{t}_prob': f'prob_{t}' for t in cfg_defaults['traj_types']}
+
+    if not set(prob_map).issubset(trajectory_probs.columns):
+        # Every window for this biomarker/cohort failed to sample (e.g. no
+        # patient cleared min_points_per_window) — embed() returns a frame
+        # without the trajtype_* columns instead of an empty-but-typed one.
+        # Treat it as "nothing to save" instead of crashing the whole cohort
+        # (and losing whichever other biomarkers already saved successfully).
+        print(f"\nERROR: No windows produced valid trajectory probabilities for {biomarker} "
+              f"(expected columns {sorted(prob_map)} not in output — likely too few points per patient).")
+        return None, None, None
+
     trajectory_probs = trajectory_probs.rename(columns=prob_map)
     trajectory_probs = trajectory_probs.rename(columns={'patientid': 'hadm_id'})
     prob_cols = [prob_map[k] for k in prob_map]
@@ -320,6 +331,7 @@ def main():
             print(f"   Processing patients {start_idx:,} to {end_idx:,} (of {total_patients:,} total)")
             print(f"   Cohort size: {len(cohort_patients):,} patients")
 
+        skipped_biomarkers = []
         for biomarker in BIOMARKER_CONFIG.keys():
             input_path = data_dir / f"{biomarker}_timeseries.csv"
             output_path = data_dir / f"{biomarker}_trajectory_probs_bayes.csv"
@@ -327,6 +339,11 @@ def main():
                 stem = output_path.stem
                 suffix = output_path.suffix
                 output_path = output_path.parent / f"{stem}_cohort{args.cohort_index:02d}{suffix}"
+
+            if output_path.exists() and output_path.stat().st_size > 0:
+                print(f"✓ Skipping {biomarker} — output already exists: {output_path}")
+                skipped_biomarkers.append(biomarker)
+                continue
 
             traj_probs, prob_cols, traj_types = compute_biomarker(
                 biomarker=biomarker,
@@ -352,9 +369,18 @@ def main():
 
             biomarker_results[biomarker] = prefixed
 
-        if not biomarker_results:
+        if not biomarker_results and not skipped_biomarkers:
             print("\n❌ ERROR: No biomarker trajectories were computed successfully")
             sys.exit(1)
+
+        if skipped_biomarkers:
+            print(
+                f"\nℹ️  {len(skipped_biomarkers)}/{len(BIOMARKER_CONFIG)} biomarker(s) were skipped "
+                f"(already computed) this invocation — skipping the per-invocation merge since it would "
+                f"be incomplete. Use the standalone merge script once all cohorts are done instead."
+            )
+            print("=" * 80)
+            return
 
         if args.pred_dataset and Path(args.pred_dataset).exists():
             print(f"\n4. Loading prediction dataset: {args.pred_dataset}")

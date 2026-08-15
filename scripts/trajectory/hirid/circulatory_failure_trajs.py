@@ -323,6 +323,17 @@ def _compute_biomarker_probs(spec: BiomarkerSpec, n_batches: int, cohort_patient
         gc.collect()
 
     trajectory_probs = pd.concat(outputs, ignore_index=True)
+
+    if not set(spec.column_map).issubset(trajectory_probs.columns):
+        # Every window for this biomarker/cohort failed to sample (e.g. no
+        # patient cleared min_points_per_window) — embed() returns a frame
+        # without the trajtype_* columns instead of an empty-but-typed one.
+        # Treat it as "nothing to save" instead of crashing the whole cohort
+        # (and losing whichever other biomarkers already saved successfully).
+        print(f"⚠️  ERROR: No windows produced valid trajectory probabilities for {spec.name} "
+              f"(expected columns {sorted(spec.column_map)} not in output — likely too few points per patient).")
+        return None
+
     trajectory_probs = trajectory_probs.rename(columns=spec.column_map)
 
     prob_cols = list(spec.column_map.values())

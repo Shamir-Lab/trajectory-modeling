@@ -124,7 +124,7 @@ BIOMARKERS = {
 }
 
 
-def compute_biomarker_trajectories(biomarker_name, config_dict, data_dir, window_hours, n_batches, cohort_patients=None, df_basis=5, sampler='pymc'):
+def compute_biomarker_trajectories(biomarker_name, config_dict, data_dir, output_path, window_hours, n_batches, cohort_patients=None, df_basis=5, sampler='pymc'):
     print("\n" + "=" * 80)
     print(f"Computing Trajectories: {biomarker_name.upper()}")
     print("=" * 80)
@@ -232,6 +232,16 @@ def compute_biomarker_trajectories(biomarker_name, config_dict, data_dir, window
         f'trajtype_{traj_type_names[2]}_prob': f'{biomarker_name}_rapid',
     }
 
+    if not set(prob_map).issubset(trajectory_probs.columns):
+        # Every window in this biomarker failed to sample (e.g. no patient had
+        # enough points to clear min_points_per_window) — embed() returns a
+        # frame without the trajtype_* columns instead of an empty-but-typed
+        # one. Treat it the same as "all batches failed" rather than crashing
+        # the whole cohort (and losing the other, already-saved biomarkers).
+        print(f"\n   ⚠️  ERROR: No windows produced valid trajectory probabilities for {biomarker_name} "
+              f"(expected columns {sorted(prob_map)} not in output — likely too few points per patient).")
+        return None
+
     trajectory_probs = trajectory_probs.rename(columns=prob_map)
     trajectory_probs = trajectory_probs.rename(columns={'patientid': 'stay_id'})
 
@@ -252,6 +262,10 @@ def compute_biomarker_trajectories(biomarker_name, config_dict, data_dir, window
     invalid_sum = (np.abs(sum_probs - 1.0) > 0.05).sum()
     if invalid_sum > 0:
         print(f"   WARNING: {invalid_sum} rows have probabilities not summing to ~1 for {biomarker_name}.")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    result.to_csv(output_path, index=False)
+    print(f"\n✓ Saved {biomarker_name} trajectory probabilities: {output_path}")
 
     return result
 
@@ -312,11 +326,22 @@ def main():
             print(f"   Processing patients {start_idx:,} to {end_idx:,} (of {total_patients:,} total)")
             print(f"   Cohort size: {len(cohort_patients):,} patients")
 
+    skipped_biomarkers = []
     for biomarker, cfg in BIOMARKERS.items():
+        output_path = data_dir / f"{biomarker}_trajectory_probs_bayes.csv"
+        if args.cohort_splits > 1:
+            output_path = output_path.parent / f"{output_path.stem}_cohort{args.cohort_index:02d}{output_path.suffix}"
+
+        if output_path.exists() and output_path.stat().st_size > 0:
+            print(f"✓ Skipping {biomarker} — output already exists: {output_path}")
+            skipped_biomarkers.append(biomarker)
+            continue
+
         traj_df = compute_biomarker_trajectories(
             biomarker_name=biomarker,
             config_dict=cfg,
             data_dir=data_dir,
+            output_path=output_path,
             window_hours=args.window_hours,
             n_batches=args.n_batches,
             cohort_patients=cohort_patients,
@@ -326,9 +351,17 @@ def main():
         if traj_df is not None:
             biomarker_results[biomarker] = traj_df
 
-    if not biomarker_results:
+    if not biomarker_results and not skipped_biomarkers:
         print("\n❌ ERROR: No biomarker trajectories were computed successfully")
         sys.exit(1)
+
+    if skipped_biomarkers:
+        print(
+            f"\nℹ️  {len(skipped_biomarkers)}/{len(BIOMARKERS)} biomarker(s) were skipped "
+            f"(already computed) this invocation — skipping the per-invocation merge since it would "
+            f"be incomplete. Use the standalone merge script once all cohorts are done instead."
+        )
+        return
 
     if args.pred_dataset and Path(args.pred_dataset).exists():
         print(f"\nLoading prediction dataset: {args.pred_dataset}")
