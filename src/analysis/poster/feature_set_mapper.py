@@ -43,11 +43,15 @@ DEFAULT_ALIASES: dict[str, list[str]] = {
         r"^Trajectory \+ Static \+ Dynamic \(Bootstrap\)$",
         r"^Static \+ Dynamic \+ Multi-Marker Trajectories \(Bootstrap\)$",
         r"^Static \+ Dynamic \+ .* Trajectory \(Bootstrap\)$",
+        r"^Baseline \+ Multi Trajectory \(Bootstrap\)$",
+        r"^Baseline \+ Single Trajectory \(Bootstrap\)$",
     ],
     "sd_sum_traj_boot": [
         r"^Trajectory \+ Summary Stats \+ Static \+ Dynamic \(Bootstrap\)$",
         r"^Static \+ Dynamic \+ Multi-Marker Trajectories \+ Summary Stats \(Bootstrap\)$",
         r"^Static \+ Dynamic \+ .* Trajectory \+ Summary Stats \(Bootstrap\)$",
+        r"^Baseline \+ Multi Trajectory \+ Summary \(Bootstrap\)$",
+        r"^Baseline \+ Single Trajectory \+ Summary \(Bootstrap\)$",
     ],
 }
 

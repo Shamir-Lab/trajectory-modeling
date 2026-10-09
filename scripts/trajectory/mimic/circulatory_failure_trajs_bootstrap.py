@@ -13,10 +13,21 @@ import gc
 from pathlib import Path
 import sys
 
-# Limit threading for cluster jobs
-os.environ['OMP_NUM_THREADS'] = '4'
-os.environ['MKL_NUM_THREADS'] = '4'
-os.environ['OPENBLAS_NUM_THREADS'] = '4'
+# Limit threading for cluster jobs. Matches the convention in
+# circulatory_failure_trajs.py (bayes script): each joblib worker gets a single
+# BLAS thread and cross-window parallelism is handled by n_jobs (below), which is
+# capped from SLURM_CPUS_PER_TASK. Previously these were hardcoded to '4' with no
+# way for the container launcher's -e OMP_NUM_THREADS=... to take effect (a plain
+# os.environ[...] = assignment always overrides an inherited env var), and n_jobs
+# was hardcoded to -1 (joblib's "use every CPU visible to the process") — under
+# udocker/proot there is no cgroup cpu limiting, so -1 reports the HOST's full
+# core count, not the batch runner's --cpus allocation. Together this meant a
+# single cohort could try to use every core on a shared, multi-user host
+# regardless of what the launcher asked for. Fixed 2026-09-01.
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+os.environ.setdefault('MKL_NUM_THREADS', '1')
+os.environ.setdefault('OPENBLAS_NUM_THREADS', '1')
+N_JOBS = int(os.environ.get('SLURM_CPUS_PER_TASK', os.environ.get('TRAJ_HEAVY_MAX_JOBS', -1)))
 
 sys.path.insert(0, os.path.abspath('src'))
 
@@ -165,7 +176,7 @@ def compute_biomarker_trajectories(biomarker_name, config_dict, data_dir, window
         values='lab_value',
         time_col=time_col,
         windowing_col=windowing_col,
-        n_jobs=-1,
+        n_jobs=N_JOBS,
         traj_types=config_dict['traj_types'],
         class_func=config_dict['class_func'],
         label_map=config_dict['label_map'],

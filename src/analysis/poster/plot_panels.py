@@ -19,10 +19,15 @@ def _save_figure(fig: plt.Figure, out_base: Path, formats: list[str], dpi: int) 
 
 MODEL_ABBR = {
     "LogisticRegression": "LR",
+    "Logistic Regression": "LR",
     "RandomForest": "RF",
+    "Random Forest": "RF",
     "HistGradientBoosting": "HGB",
+    "Gradient Boosting": "HGB",
     "XGBoost": "XGB",
 }
+
+MODEL_ORDER = ["LR", "RF", "HGB", "XGB"]
 
 FEATURE_ABBR = {
     "Static + Dynamic": "SD",
@@ -50,7 +55,13 @@ def plot_main_panel(
     formats: list[str],
     dpi: int,
     figsize: tuple[float, float],
+    chance_baseline: dict[str, float] | None = None,
 ) -> None:
+    """
+    chance_baseline: optional {"auroc": 0.5, "aupr": positive_rate} — draws a
+    dashed reference line on the corresponding metric's axis. Omitted (None)
+    by default so existing callers are unaffected.
+    """
     set_poster_style()
     sns.set_style("whitegrid")
     metric_palettes = get_metric_palettes(len(canonical_order))
@@ -59,6 +70,7 @@ def plot_main_panel(
     work["feature_label"] = work["canonical_feature_set"].map(CANONICAL_LABELS)
     work["model_label"] = work["model"].map(_abbr_model_label)
     label_order = [CANONICAL_LABELS[c] for c in canonical_order if c in CANONICAL_LABELS]
+    model_order = [m for m in MODEL_ORDER if m in work["model_label"].unique()]
 
     fig_w = max(float(figsize[0]), 18.0)
     fig_h = max(float(figsize[1]), 6.8)
@@ -69,6 +81,7 @@ def plot_main_panel(
             data=work,
             x="model_label",
             y=metric,
+            order=model_order,
             hue="feature_label",
             hue_order=label_order,
             palette=pal,
@@ -76,6 +89,9 @@ def plot_main_panel(
             fliersize=1.8,
             linewidth=1.0,
         )
+        baseline_val = chance_baseline.get(metric) if chance_baseline else None
+        if baseline_val is not None:
+            ax.axhline(baseline_val, color="black", linestyle="--", linewidth=1.0, alpha=0.6, zorder=0)
         ax.set_title("AUROC" if metric == "auroc" else "AUPR")
         ax.set_xlabel("Model")
         ax.set_ylabel(metric.upper())
@@ -112,7 +128,13 @@ def plot_best_model_panel(
     formats: list[str],
     dpi: int,
     figsize: tuple[float, float],
+    chance_baseline: dict[str, float] | None = None,
 ) -> None:
+    """
+    chance_baseline: optional {"auroc": 0.5, "aupr": positive_rate} — draws a
+    dashed reference line on the corresponding metric's axis. Omitted (None)
+    by default so existing callers are unaffected.
+    """
     set_poster_style()
     sns.set_style("whitegrid")
     metric_palettes = get_metric_palettes(len(canonical_order))
@@ -165,6 +187,13 @@ def plot_best_model_panel(
 
         y_max = float(work[metric].max())
         y_min = float(work[metric].min())
+        baseline_val = chance_baseline.get(metric) if chance_baseline else None
+        if baseline_val is not None:
+            ax.axhline(baseline_val, color="black", linestyle="--", linewidth=1.0, alpha=0.6, zorder=0)
+            # Fold the baseline into the span so it stays visible once ylim
+            # is explicitly set below (with or without significance brackets).
+            y_max = max(y_max, baseline_val)
+            y_min = min(y_min, baseline_val)
         y_span = max(y_max - y_min, 0.02)
         # place brackets closer to the boxplots but increase spacing between stacked brackets
         start_offset = 0.03 * y_span
@@ -211,6 +240,11 @@ def plot_best_model_panel(
             y_upper = y_max + start_offset + (step * drawn) + (0.08 * y_span)
             y_lower = y_min - (0.04 * y_span)
             ax.set_ylim(y_lower, y_upper)
+        elif baseline_val is not None:
+            # No significance brackets to accommodate, but still make sure
+            # the baseline line (possibly outside the boxplot's own data
+            # range) stays within view.
+            ax.set_ylim(y_min - 0.04 * y_span, y_max + 0.08 * y_span)
 
     fig.suptitle(f"{title_prefix}: best model ({best_model}) with significance", y=1.03)
     fig.subplots_adjust(bottom=0.30, top=0.86, wspace=0.2)

@@ -36,9 +36,31 @@ def merge_cohorts(base_name: str) -> pd.DataFrame | None:
         return None
 
     merged = pd.concat(parts, ignore_index=True)
+
+    # The raw per-cohort files retain one row per raw sub-hourly measurement
+    # (multiple charttime readings can fall in the same time_hour bucket),
+    # not one row per (patientid, time_hour) -- but the trajectory
+    # probability columns (prob_stable/prob_*) are already constant within
+    # each (patientid, time_hour) group, since they were computed at hourly
+    # granularity and simply broadcast across every raw measurement row
+    # sharing that hour. Collapsing to one row per (patientid, time_hour)
+    # here (keep="first") loses no information and avoids a combinatorial
+    # row-count explosion in the multi-biomarker join below -- confirmed via
+    # groupby(...).nunique() that prob columns never disagree within a group
+    # (0/88098 heartrate groups, 0/86264 systolic groups, 0/3192 lactate
+    # groups mismatched, cohort00 sample). Without this, heartrate/systolic's
+    # ~10-24x row inflation compounds across the sequential joins below into
+    # a 229M-row output that blows past disk quota.
+    key_cols = [c for c in ["patientid", "time_hour"] if c in merged.columns]
+    if key_cols:
+        before = len(merged)
+        merged = merged.drop_duplicates(subset=key_cols, keep="first")
+        if len(merged) != before:
+            print(f"  Deduplicated {base_name}: {before:,} -> {len(merged):,} rows (removed {before - len(merged):,} redundant sub-hourly rows)")
+
     out = data_dir / f"{base_name}.csv"
     merged.to_csv(out, index=False)
-    print(f"  ✓ {out} ({len(merged):,} rows)")
+    print(f"  {out} ({len(merged):,} rows)")
     return merged
 
 
@@ -83,11 +105,21 @@ for biomarker, traj_df in biomarker_dfs.items():
         continue
 
     traj_df = traj_df[[id_col, time_col] + traj_cols].rename(columns=rename)
+    n_before = len(dataset)
     dataset = dataset.merge(traj_df, on=[id_col, time_col], how="left")
+    if len(dataset) != n_before:
+        # A left merge on a properly deduplicated (one row per key) table can
+        # never change the row count -- if it did, merge_cohorts()'s dedup
+        # above didn't fully collapse duplicate keys. Fail loudly rather than
+        # silently write a fanned-out (and likely disk-quota-busting) dataset.
+        raise SystemExit(
+            f"ERROR: merging {biomarker} changed row count {n_before:,} -> {len(dataset):,} "
+            f"(duplicate {id_col}/{time_col} keys remain in the {biomarker} trajectory table)"
+        )
     print(f"  Merged {biomarker}: {len(dataset):,} rows")
 
 out_path = data_dir / "circulatory_failure_prediction_dataset_with_probs.csv"
 dataset.to_csv(out_path, index=False)
-print(f"\n✓ {out_path} ({len(dataset):,} rows)")
-print("\n✓ Merge complete!")
+print(f"\n{out_path} ({len(dataset):,} rows)")
+print("\nMerge complete!")
 PY

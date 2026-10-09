@@ -163,7 +163,12 @@ export UDOCKER_DIR="$UDOCKER_DIR_OPT"
 CACHE_ROOT="${CACHE_ROOT_OPT:-/dev/shm/${USER}/trajmodel_cache/${DATASET}}"
 
 DATA_DIR="${DATA_ROOT}/${DATASET}/circulatory_failure"
-RUN_ID="$(date +%Y%m%d_%H%M%S)"
+RUN_ID="$(date +%Y%m%d_%H%M%S)_$$${LOCK_SUFFIX:+_$LOCK_SUFFIX}"
+# PID + lock-suffix suffix avoids two concurrently-launched shards colliding
+# on the same LOG_ROOT when they happen to start within the same second
+# (RUN_ID only has 1s resolution) — confirmed the hard way: a local shard and
+# a remote SSH-launched shard fired in the same second, shared this NFS repo
+# path, and interleaved into one run.log/status.tsv until the local one died.
 LOG_ROOT="${REPO_ROOT}/logs/container_runs/${DATASET}_cf/${RUN_ID}"
 mkdir -p "$LOG_ROOT"
 MASTER_LOG="${LOG_ROOT}/run.log"
@@ -497,6 +502,15 @@ for cohort in "${COHORT_INDICES[@]}"; do
         "$duration" "$exit_code" "$status" >> "$STATUS_TSV"
 
     echo "Cohort ${cohort_padded}: ${status} (exit=${exit_code}, ${duration}s). Logs: ${OUT_LOG} / ${ERR_LOG}"
+
+    # Successful cohorts' .err logs are just PyMC sampler chatter (NUTS/rhat/ess
+    # noise) with no diagnostic value once the cohort has succeeded, but they
+    # routinely run 150-250MB each — across 20+ cohorts per dataset that repeatedly
+    # ran gaga (150G quota) dry mid-run. Drop them on success; keep on failure for
+    # debugging.
+    if [[ "$status" == "OK" ]]; then
+        rm -f "$ERR_LOG"
+    fi
 
     # Free the RAM-backed scratch for this cohort. The process group this cohort ran in
     # has already exited normally by this point (wait returned) — orphaned workers are

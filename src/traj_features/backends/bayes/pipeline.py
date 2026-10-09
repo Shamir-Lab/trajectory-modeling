@@ -52,22 +52,15 @@ def _patch_pytensor_compile_function_src() -> None:
 _patch_pytensor_compile_function_src()
 
 
-def _window_worker(
-    window_df: pd.DataFrame,
-    flat_thr=-1.0, decline_thr=-2.0, nonlinear_gap=3.0,
-    df_basis=5, n_samples=1000, tune=1000, min_points=5, grid_freq=12,
-    class_func=flags_from_traj, values='lab_value', time_col='time',
-    traj_types=('prolonged_nonprogression','linear_decline','nonlinear'),
-    label_map=None,
-    *,
-    sampler: str = 'pymc',
-    chains: int = 4,
-    cores: int = 1,
-    progressbar: bool = False,
-    chain_method: str = "vectorized",
-    target_accept: float = 0.95,
+def _apply_worker_process_patches() -> None:
+    """PyTensor/loky worker-safety patches + BLAS thread limits.
 
-):
+    Must be called inside every joblib worker process (loky spawns fresh
+    interpreters, so patches applied only in the parent process don't apply
+    here) before any PyMC/PyTensor sampling call. Shared by `_window_worker`
+    and any other per-window Bayesian worker (e.g. a raw-slope cache builder)
+    that needs the same SLURM-array-job race-condition fixes.
+    """
     # Patch add_key to be idempotent: Loky reuses worker processes so a key
     # compiled in batch N is still in memory when batch N+1 runs.
     # Workers share the compiledir (set by PYTENSOR_FLAGS) so compiled Numba
@@ -124,6 +117,25 @@ def _window_worker(
     os.environ["MKL_NUM_THREADS"] = "1"
     os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
+
+def _window_worker(
+    window_df: pd.DataFrame,
+    flat_thr=-1.0, decline_thr=-2.0, nonlinear_gap=3.0,
+    df_basis=5, n_samples=1000, tune=1000, min_points=5, grid_freq=12,
+    class_func=flags_from_traj, values='lab_value', time_col='time',
+    traj_types=('prolonged_nonprogression','linear_decline','nonlinear'),
+    label_map=None,
+    *,
+    sampler: str = 'pymc',
+    chains: int = 4,
+    cores: int = 1,
+    progressbar: bool = False,
+    chain_method: str = "vectorized",
+    target_accept: float = 0.95,
+
+):
+    _apply_worker_process_patches()
+
     try:
         tg, ys = _sample_post_trajs_scaled(
             window_df, df_basis, n_samples, tune, min_points, grid_freq,
@@ -171,10 +183,11 @@ def compute_time_varying_trajectory_covariates_parallel(
     chains: int = 4,
     cores: int = 1,
     progressbar: bool = False,
-    chain_method: str = "vectorized", 
+    chain_method: str = "vectorized",
     target_accept: float = 0.95,
     available_gpus: list[int]|None = None,
-    windowing_col: str|None = None  # allows windows in different granullarity than the measuring frequency
+    windowing_col: str|None = None,  # allows windows in different granullarity than the measuring frequency
+    batch_timeout_s: float = 14400.0,
 ) -> pd.DataFrame:
     """
     For each (pid, anchor time), use the previous window_years to compute
@@ -195,31 +208,43 @@ def compute_time_varying_trajectory_covariates_parallel(
         if not batch:
             return []
 
-        if sampler in ("numpyro", "blackjax") and available_gpus and len(available_gpus) > 1:
-            nj_eff = min(len(available_gpus), len(batch))
-            print(f"[INFO] Using {nj_eff} GPUs in parallel: {available_gpus[:nj_eff]}")
-            gpu_rr = [available_gpus[i % len(available_gpus)] for i in range(len(batch))]
-            results = Parallel(n_jobs=nj_eff, backend="loky", verbose=verbose)(
-                delayed(_window_worker_gpu_pinned)(
-                    win_df, gpu_id,
-                    flat_thr, decline_thr, nonlinear_gap, df_basis, n_samples, tune,
-                    min_points_per_window, grid_freq, class_func, values, time_col, traj_types, label_map=label_map,
-                    sampler=sampler, chains=chains, cores=cores, progressbar=progressbar, chain_method=chain_method,
-                    target_accept=target_accept
+        # A per-batch timeout bounds a genuinely pathological hang (e.g. a stuck
+        # worker under proot that never returns) to batch_timeout_s instead of an
+        # unbounded wait. Set generously (4h): real HiRID cohorts legitimately take
+        # 27-71h end-to-end across many biomarkers/batches, so a tight timeout risks
+        # silently discarding valid slow-but-healthy batches as failed. On timeout
+        # the whole batch is marked failed (matches _window_worker's existing
+        # per-window except-and-skip contract) rather than hanging indefinitely.
+        try:
+            if sampler in ("numpyro", "blackjax") and available_gpus and len(available_gpus) > 1:
+                nj_eff = min(len(available_gpus), len(batch))
+                print(f"[INFO] Using {nj_eff} GPUs in parallel: {available_gpus[:nj_eff]}")
+                gpu_rr = [available_gpus[i % len(available_gpus)] for i in range(len(batch))]
+                results = Parallel(n_jobs=nj_eff, backend="loky", verbose=verbose, timeout=batch_timeout_s)(
+                    delayed(_window_worker_gpu_pinned)(
+                        win_df, gpu_id,
+                        flat_thr, decline_thr, nonlinear_gap, df_basis, n_samples, tune,
+                        min_points_per_window, grid_freq, class_func, values, time_col, traj_types, label_map=label_map,
+                        sampler=sampler, chains=chains, cores=cores, progressbar=progressbar, chain_method=chain_method,
+                        target_accept=target_accept
+                    )
+                    for (_, _, win_df), gpu_id in zip(batch, gpu_rr)
                 )
-                for (_, _, win_df), gpu_id in zip(batch, gpu_rr)
-            )
-        else:
-            nj_eff = n_jobs if sampler == "nutpie" else 1 if sampler in ("numpyro", "blackjax") else n_jobs
-            results = Parallel(n_jobs=nj_eff, backend="loky", verbose=verbose)(
-                delayed(_window_worker)(
-                    win_df, flat_thr, decline_thr, nonlinear_gap, df_basis, n_samples, tune,
-                    min_points_per_window, grid_freq, class_func, values, time_col, traj_types, label_map=label_map,
-                    sampler=sampler, chains=chains, cores=cores, progressbar=progressbar, chain_method=chain_method,
-                    target_accept=target_accept
+            else:
+                nj_eff = n_jobs if sampler == "nutpie" else 1 if sampler in ("numpyro", "blackjax") else n_jobs
+                results = Parallel(n_jobs=nj_eff, backend="loky", verbose=verbose, timeout=batch_timeout_s)(
+                    delayed(_window_worker)(
+                        win_df, flat_thr, decline_thr, nonlinear_gap, df_basis, n_samples, tune,
+                        min_points_per_window, grid_freq, class_func, values, time_col, traj_types, label_map=label_map,
+                        sampler=sampler, chains=chains, cores=cores, progressbar=progressbar, chain_method=chain_method,
+                        target_accept=target_accept
+                    )
+                    for (_, _, win_df) in batch
                 )
-                for (_, _, win_df) in batch
-            )
+        except TimeoutError:
+            print(f"[WARNING] Batch of {len(batch)} windows exceeded batch_timeout_s={batch_timeout_s}s "
+                  f"(stuck worker/poisoned window) — skipping this batch and continuing.")
+            results = [{} for _ in batch]
 
         out_rows = []
         for (pid, t, _), probs in zip(batch, results):

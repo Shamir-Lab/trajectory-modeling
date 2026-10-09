@@ -6,7 +6,12 @@ set -euo pipefail
 
 DATA_ROOT="${DATA_ROOT:-/home/gaga/data/physionet}"
 DATA_DIR="${DATA_ROOT}/mimic/circulatory_failure"
-N_COHORTS=5
+# Must match the --cohort-splits used by docker/run_mimic_cf_bootstrap_batches.sh
+# (default 24). The old default here was 5, left over from the original
+# 2026-03/2026-05 5-way SLURM run — see that script's header for why mixing
+# 5-way and 24-way cohort files under the same cohortNN index is a silent
+# data-loss trap (project memory feedback_slurm_bugs Bug 7).
+COHORT_SPLITS="${COHORT_SPLITS:-24}"
 
 echo "Merging MIMIC Circulatory Failure Bootstrap trajectory files..."
 
@@ -16,7 +21,7 @@ import pandas as pd
 import os
 
 data_dir = Path(os.environ.get("DATA_ROOT", "/home/gaga/data/physionet")) / "mimic" / "circulatory_failure"
-n_cohorts = 5
+n_cohorts = int(os.environ.get("COHORT_SPLITS", "24"))
 
 def merge_base(base_name: str):
     parts = []

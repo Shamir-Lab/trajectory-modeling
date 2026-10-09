@@ -6,17 +6,22 @@ set -euo pipefail
 
 DATA_ROOT="${DATA_ROOT:-/home/gaga/data/physionet}"
 DATA_DIR="${DATA_ROOT}/mimic/circulatory_failure"
-N_COHORTS=4
+N_COHORTS="${N_COHORTS:-24}"
 
-echo "Merging MIMIC Circulatory Failure Bayesian trajectory files..."
+echo "Merging MIMIC Circulatory Failure Bayesian trajectory files (N_COHORTS=${N_COHORTS})..."
 
-python - <<'PY'
+# Note: the per-cohort "circulatory_failure_prediction_dataset_with_probs_cohortNN" merge
+# below only exists for cohorts where all 3 biomarkers were computed in the SAME invocation
+# (circulatory_failure_trajs.py skips its own per-invocation merge if any biomarker was
+# already done and skipped) — with resumable runs this will often be absent per-cohort;
+# the per-biomarker merge above it is the reliable artifact to use downstream.
+N_COHORTS="$N_COHORTS" DATA_ROOT="$DATA_ROOT" python - <<'PY'
 from pathlib import Path
 import pandas as pd
 import os
 
 data_dir = Path(os.environ.get("DATA_ROOT", "/home/gaga/data/physionet")) / "mimic" / "circulatory_failure"
-n_cohorts = 4
+n_cohorts = int(os.environ.get("N_COHORTS", "24"))
 
 def merge_base(base_name: str) -> pd.DataFrame | None:
     parts = []

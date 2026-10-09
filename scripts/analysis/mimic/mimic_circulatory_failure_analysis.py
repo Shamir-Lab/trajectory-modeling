@@ -18,6 +18,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed
 
 from sklearn.metrics import roc_auc_score, average_precision_score
 from sklearn.model_selection import GroupKFold
@@ -74,36 +75,98 @@ def _load_named_table(base_dir: Path, stem_name: str) -> pd.DataFrame:
     raise FileNotFoundError(f'Missing table for {stem_name}. Tried: {candidates}')
 
 
-def load_data(base_dir: Path):
-    """Load prediction dataset and biomarker timeseries."""
-    logger.info(f'BASE_DIR: {base_dir}')
+def _safe_left_merge(base_df, add_df, key_cols, add_name):
+    """Left-merge add_df onto base_df on key_cols, de-duplicating either side
+    first so pandas' validate='one_to_one' doesn't raise. Mirrors
+    scripts/analysis/eicu/eicu_circulatory_failure_analysis.py::_safe_left_merge.
+    """
+    base_dup = int(base_df.duplicated(subset=key_cols).sum())
+    add_dup = int(add_df.duplicated(subset=key_cols).sum())
 
-    # Load prediction dataset
-    pred_stem_candidates = [
-        'circulatory_failure_prediction_dataset_with_bootstrap_probs',
-        'circulatory_failure_prediction_dataset_with_probs',
-        'circulatory_failure_prediction_dataset',
-    ]
-    for _stem in pred_stem_candidates:
-        try:
-            dataset = _load_named_table(base_dir, _stem)
-            pred_source_stem = _stem
-            break
-        except FileNotFoundError:
-            continue
-    else:
-        raise FileNotFoundError('Could not find prediction dataset.')
+    if base_dup > 0:
+        logger.warning(f'base dataset has {base_dup:,} duplicate keys; keeping first')
+        base_df = base_df.drop_duplicates(subset=key_cols, keep='first')
 
-    logger.info(f'Loaded prediction dataset ({pred_source_stem}): {len(dataset):,} samples')
+    if add_dup > 0:
+        prob_cols = [c for c in add_df.columns if c not in key_cols]
+        logger.warning(f'{add_name} has {add_dup:,} duplicate keys; aggregating means')
+        add_df = add_df.groupby(key_cols, as_index=False)[prob_cols].mean()
 
-    # Check for bootstrap probs
+    return base_df.merge(add_df, on=key_cols, how='left', validate='one_to_one')
+
+
+def load_prediction_dataset(base_dir: Path):
+    """Load the MIMIC circulatory-failure prediction dataset, combining the
+    bayes and bootstrap trajectory-probability backends when both are
+    available.
+
+    Mirrors the dual-backend merge in
+    scripts/analysis/eicu/eicu_circulatory_failure_analysis.py::load_prediction_dataset:
+    when both a pre-merged bayes prediction dataset
+    (`circulatory_failure_prediction_dataset_with_probs`) and a pre-merged
+    bootstrap prediction dataset
+    (`circulatory_failure_prediction_dataset_with_bootstrap_probs`) exist
+    with all 9 raw trajectory columns, they are combined into a single
+    dataframe: bootstrap trajectory columns are renamed with a "_boot"
+    suffix, bayes trajectory columns are left unsuffixed, and the two are
+    left-joined on [id_col, windowing_col]. Falls back to whichever single
+    backend is available, then to the raw (no trajectory probs) prediction
+    dataset.
+    """
+    pred_stem_bootstrap = 'circulatory_failure_prediction_dataset_with_bootstrap_probs'
+    pred_stem_bayes = 'circulatory_failure_prediction_dataset_with_probs'
+    pred_stem_base = 'circulatory_failure_prediction_dataset'
+
     expected_traj_cols = [
         'lactate_stable', 'lactate_gradual', 'lactate_rapid',
         'heartrate_stable', 'heartrate_gradual', 'heartrate_rapid',
         'systolic_stable', 'systolic_gradual', 'systolic_rapid',
     ]
-    has_bootstrap_probs = all(c in dataset.columns for c in expected_traj_cols)
-    logger.info(f'Bootstrap trajectory features present: {has_bootstrap_probs}')
+
+    def _try_load(stem):
+        try:
+            return _load_named_table(base_dir, stem)
+        except FileNotFoundError:
+            return None
+
+    dataset_boot = _try_load(pred_stem_bootstrap)
+    dataset_bayes = _try_load(pred_stem_bayes)
+
+    has_boot_merged = dataset_boot is not None and all(c in dataset_boot.columns for c in expected_traj_cols)
+    has_bayes_merged = dataset_bayes is not None and all(c in dataset_bayes.columns for c in expected_traj_cols)
+    logger.info(f'Pre-merged bootstrap trajectory dataset present: {has_boot_merged}')
+    logger.info(f'Pre-merged bayes trajectory dataset present: {has_bayes_merged}')
+
+    if has_boot_merged and has_bayes_merged:
+        logger.info('Both trajectory backends found — merging into one working dataframe.')
+        id_col = _pick_id_col(dataset_boot)
+        _, windowing_col = _pick_time_cols(dataset_boot)
+        key_cols = [id_col, windowing_col]
+        dataset = dataset_boot.rename(columns={c: f'{c}_boot' for c in expected_traj_cols})
+        dataset = _safe_left_merge(dataset, dataset_bayes[key_cols + expected_traj_cols], key_cols, 'bayes_traj')
+        pred_source_stem = f'{pred_stem_bootstrap} + {pred_stem_bayes}'
+    elif has_boot_merged:
+        dataset = dataset_boot
+        pred_source_stem = pred_stem_bootstrap
+    elif has_bayes_merged:
+        dataset = dataset_bayes
+        pred_source_stem = pred_stem_bayes
+    else:
+        dataset = _load_named_table(base_dir, pred_stem_base)
+        pred_source_stem = pred_stem_base
+
+    logger.info(f'Loaded prediction dataset ({pred_source_stem}): {len(dataset):,} samples')
+    return dataset, has_boot_merged, has_bayes_merged
+
+
+def load_data(base_dir: Path):
+    """Load prediction dataset and biomarker timeseries."""
+    logger.info(f'BASE_DIR: {base_dir}')
+
+    dataset, has_boot_merged, has_bayes_merged = load_prediction_dataset(base_dir)
+    # True only when the bootstrap backend's raw trajectory columns (now
+    # "_boot"-suffixed when both backends are present) made it into the dataset.
+    has_bootstrap_probs = has_boot_merged
 
     # Load biomarker timeseries
     lactate_ts = _load_named_table(base_dir, 'lactate_timeseries')
@@ -224,28 +287,54 @@ def prepare_features(dataset, id_col, windowing_col, lactate_ts, heartrate_ts, s
         dataset['gender'] = dataset['gender'].map(gender_map)
 
     static_features = [c for c in ['age', 'gender'] if c in dataset.columns]
-    exclude_keywords = ['stable', 'gradual', 'rapid', 'worsening', 'marker', 'trend', 'change', 'boot']
-    dynamic_labs = [
-        col for col in dataset.columns
-        if any(col.startswith(prefix) for prefix in ['min_', 'mean_', 'max_'])
-        and not any(keyword in col.lower() for keyword in exclude_keywords)
-    ]
-    dynamic_vitals = [
-        col for col in dataset.columns
-        if any(x in col for x in ['heart_rate', 'respiratory_rate', 'o2_sat', 'systolic', 'diastolic', 'mean_bp', 'temperature'])
-    ]
-    dynamic_features = list(dict.fromkeys(dynamic_labs + dynamic_vitals))
-    static_dynamic_cols = static_features + dynamic_features
 
     lactate_traj = ['lactate_stable', 'lactate_gradual', 'lactate_rapid', 'lactate_worsening']
     heartrate_traj = ['heartrate_stable', 'heartrate_gradual', 'heartrate_rapid', 'heartrate_worsening']
     systolic_traj = ['systolic_stable', 'systolic_gradual', 'systolic_rapid', 'systolic_worsening']
     multi_traj = lactate_traj + heartrate_traj + systolic_traj + ['multi_marker_mean_worsening']
 
+    # Bootstrap-backed trajectory columns carry a "_boot" suffix (see
+    # load_prediction_dataset()'s dual-backend merge). Kept strictly disjoint
+    # from the bayes ones above and from "Static + Dynamic" below.
+    lactate_traj_boot = [f'{c}_boot' for c in lactate_traj]
+    heartrate_traj_boot = [f'{c}_boot' for c in heartrate_traj]
+    systolic_traj_boot = [f'{c}_boot' for c in systolic_traj]
+    multi_traj_boot = lactate_traj_boot + heartrate_traj_boot + systolic_traj_boot + ['multi_marker_mean_worsening_boot']
+
     lactate_summary_cols = [c for c in dataset.columns if c.startswith('lactate_') and c.endswith('h')]
     heartrate_summary_cols = [c for c in dataset.columns if c.startswith('heartrate_') and c.endswith('h')]
     systolic_summary_cols = [c for c in dataset.columns if c.startswith('systolic_') and c.endswith('h')]
     multi_summary = lactate_summary_cols + heartrate_summary_cols + systolic_summary_cols
+
+    # Anything already classified as trajectory (either backend) or summary must
+    # not also leak into "dynamic" via the substring-based vital-sign scan below
+    # (e.g. "systolic_stable" and "systolic_stable_boot" both contain "systolic")
+    # — that would silently contaminate "Static + Dynamic" with trajectory signal
+    # it's supposed to exclude. Mirrors the fix in
+    # scripts/analysis/eicu/eicu_circulatory_failure_analysis.py::build_feature_sets.
+    non_baseline_cols = set(multi_traj + multi_traj_boot + multi_summary)
+
+    exclude_keywords = ['stable', 'gradual', 'rapid', 'worsening', 'marker', 'trend', 'change', 'boot']
+    dynamic_labs = [
+        col for col in dataset.columns
+        if any(col.startswith(prefix) for prefix in ['min_', 'mean_', 'max_'])
+        and not any(keyword in col.lower() for keyword in exclude_keywords)
+        and col not in non_baseline_cols
+    ]
+    dynamic_vitals = [
+        col for col in dataset.columns
+        if any(x in col for x in ['heart_rate', 'respiratory_rate', 'o2_sat', 'systolic', 'diastolic', 'mean_bp', 'temperature'])
+        and col not in non_baseline_cols
+    ]
+    dynamic_features = list(dict.fromkeys(dynamic_labs + dynamic_vitals))
+    static_dynamic_cols = static_features + dynamic_features
+
+    def _has_data(cols):
+        present = [c for c in cols if c in dataset.columns]
+        return len(present) > 0 and bool(dataset[present].notna().any().any())
+
+    has_boot_traj = _has_data(lactate_traj_boot)
+    logger.info(f'Bootstrap trajectory backend available for feature sets: {has_boot_traj}')
 
     feature_sets = {
         'Single Marker Trajectory': lactate_traj,
@@ -257,8 +346,8 @@ def prepare_features(dataset, id_col, windowing_col, lactate_ts, heartrate_ts, s
         'Static + Multi-Marker Trajectories': static_features + multi_traj,
         'Static + Single Marker Summary Stats': static_features + lactate_summary_cols,
         'Static + Multi-Marker Summary Stats': static_features + multi_summary,
-        'Static + Single Marker Trajectory + Summary': static_features + lactate_traj + lactate_summary_cols,
-        'Static + Multi-Marker Trajectories + Summary': static_features + multi_traj + multi_summary,
+        'Static + Single Marker Trajectory + Summary Stats': static_features + lactate_traj + lactate_summary_cols,
+        'Static + Multi-Marker Trajectories + Summary Stats': static_features + multi_traj + multi_summary,
     }
 
     if len(dynamic_features) > 0:
@@ -267,8 +356,14 @@ def prepare_features(dataset, id_col, windowing_col, lactate_ts, heartrate_ts, s
         feature_sets['Static + Dynamic + Multi-Marker Trajectories'] = static_dynamic_cols + multi_traj
         feature_sets['Static + Dynamic + Single Marker Summary Stats'] = static_dynamic_cols + lactate_summary_cols
         feature_sets['Static + Dynamic + Multi-Marker Summary Stats'] = static_dynamic_cols + multi_summary
-        feature_sets['Static + Dynamic + Single Marker Trajectory + Summary'] = static_dynamic_cols + lactate_traj + lactate_summary_cols
-        feature_sets['Static + Dynamic + Multi-Marker Trajectories + Summary'] = static_dynamic_cols + multi_traj + multi_summary
+        feature_sets['Static + Dynamic + Single Marker Trajectory + Summary Stats'] = static_dynamic_cols + lactate_traj + lactate_summary_cols
+        feature_sets['Static + Dynamic + Multi-Marker Trajectories + Summary Stats'] = static_dynamic_cols + multi_traj + multi_summary
+
+        if has_boot_traj:
+            feature_sets['Static + Dynamic + Single Marker Trajectory (Bootstrap)'] = static_dynamic_cols + lactate_traj_boot
+            feature_sets['Static + Dynamic + Multi-Marker Trajectories (Bootstrap)'] = static_dynamic_cols + multi_traj_boot
+            feature_sets['Static + Dynamic + Single Marker Trajectory + Summary Stats (Bootstrap)'] = static_dynamic_cols + lactate_traj_boot + lactate_summary_cols
+            feature_sets['Static + Dynamic + Multi-Marker Trajectories + Summary Stats (Bootstrap)'] = static_dynamic_cols + multi_traj_boot + multi_summary
 
     for set_name, cols in list(feature_sets.items()):
         feature_sets[set_name] = [c for c in cols if c in dataset.columns]
@@ -278,8 +373,17 @@ def prepare_features(dataset, id_col, windowing_col, lactate_ts, heartrate_ts, s
     return dataset, target_col, feature_sets
 
 
-def run_cv(dataset, target_col, id_col, feature_sets, n_repeats=5, n_folds=5, seed=920):
-    """Run cross-validation with all models and feature sets."""
+def run_cv(dataset, target_col, id_col, feature_sets, n_repeats=10, n_folds=5, seed=920, train_n_jobs=1):
+    """Run cross-validation with all models and feature sets.
+
+    train_n_jobs > 1 evaluates (model, feature set) pairs concurrently on
+    threads. Threads (not processes) because the dataset is millions of rows:
+    process workers would each need their own copy, while sklearn/XGBoost
+    release the GIL inside their native fit/predict loops, so threads get real
+    parallelism at no memory cost. Each job derives its own shuffles from
+    `seed + repeat` and returns its own rows, so results do not depend on
+    scheduling order.
+    """
     dataset_clean = dataset.dropna(subset=[target_col]).copy()
     y = dataset_clean[target_col]
     groups = dataset_clean[id_col]
@@ -287,6 +391,9 @@ def run_cv(dataset, target_col, id_col, feature_sets, n_repeats=5, n_folds=5, se
     traj_cols = [c for c in dataset_clean.columns if any(k in c for k in ['_stable', '_gradual', '_rapid', '_worsening'])]
     summary_cols = [c for c in dataset_clean.columns if c.endswith('h') and any(prefix in c for prefix in ['lactate_', 'heartrate_', 'systolic_'])]
 
+    # Temporal carry-forward of trajectory probabilities (matches HiRID/shared-template practice)
+    if traj_cols:
+        dataset_clean[traj_cols] = dataset_clean.groupby(id_col)[traj_cols].ffill(limit=2)
     dataset_clean.loc[:, traj_cols] = dataset_clean[traj_cols].fillna(0)
     dataset_clean.loc[:, summary_cols] = dataset_clean[summary_cols].fillna(0)
 
@@ -305,12 +412,15 @@ def run_cv(dataset, target_col, id_col, feature_sets, n_repeats=5, n_folds=5, se
             random_state=seed,
             solver='lbfgs'
         ),
+        # RF parallelises internally; when the outer loop is already threaded,
+        # keep it at 1 thread so the two levels don't multiply into an
+        # oversubscribed thread count on a shared host.
         'Random Forest': lambda pos_weight, seed: RandomForestClassifier(
             n_estimators=200,
             max_depth=12,
             class_weight='balanced',
             random_state=seed,
-            n_jobs=4
+            n_jobs=1 if train_n_jobs > 1 else 4
         ),
         'Gradient Boosting': lambda pos_weight, seed: HistGradientBoostingClassifier(
             max_bins=225,
@@ -321,78 +431,91 @@ def run_cv(dataset, target_col, id_col, feature_sets, n_repeats=5, n_folds=5, se
         )
     }
 
-    fold_rows = []
+    def _run_pair(model_name, model_fn, feature_set_name, feature_cols):
+        """Evaluate one (model, feature set) pair across all repeats/folds."""
+        rows = []
+        fold_metrics = {'roc_auc': [], 'avg_precision': []}
+        repeat_lines = []
 
-    logger.info(f"Starting CV: models={len(models_to_evaluate)}, feature_sets={len(feature_sets)}, repeats={n_repeats}, folds={n_folds}")
+        for repeat in range(n_repeats):
+            shuffle_idx = np.random.RandomState(seed=seed + repeat).permutation(len(dataset_clean))
+            dataset_repeat = dataset_clean.iloc[shuffle_idx].reset_index(drop=True)
+            y_repeat = y.iloc[shuffle_idx].reset_index(drop=True)
+            groups_repeat = groups.iloc[shuffle_idx].reset_index(drop=True)
+            gkf = GroupKFold(n_splits=n_folds)
 
-    for model_name, model_fn in models_to_evaluate.items():
-        logger.info(f"\n{'=' * 80}")
-        logger.info(f"Model: {model_name}")
-        logger.info(f"{'=' * 80}")
+            rep_auc = []
+            rep_aupr = []
 
-        for feature_set_name, feature_cols in feature_sets.items():
-            logger.info(f"  -> Feature set: {feature_set_name} ({len(feature_cols)} features)")
+            for fold_idx, (train_idx, test_idx) in enumerate(gkf.split(dataset_repeat, y_repeat, groups_repeat), start=1):
+                X_train = dataset_repeat.iloc[train_idx][feature_cols]
+                X_test = dataset_repeat.iloc[test_idx][feature_cols]
+                y_train = y_repeat.iloc[train_idx]
+                y_test = y_repeat.iloc[test_idx]
 
-            fold_metrics = {'roc_auc': [], 'avg_precision': []}
+                imputer = SimpleImputer(strategy='median')
+                X_train_imputed = imputer.fit_transform(X_train)
+                X_test_imputed = imputer.transform(X_test)
 
-            for repeat in range(n_repeats):
-                shuffle_idx = np.random.RandomState(seed=seed + repeat).permutation(len(dataset_clean))
-                dataset_repeat = dataset_clean.iloc[shuffle_idx].reset_index(drop=True)
-                y_repeat = y.iloc[shuffle_idx].reset_index(drop=True)
-                groups_repeat = groups.iloc[shuffle_idx].reset_index(drop=True)
-                gkf = GroupKFold(n_splits=n_folds)
+                scaler = StandardScaler()
+                X_train_scaled = scaler.fit_transform(X_train_imputed)
+                X_test_scaled = scaler.transform(X_test_imputed)
 
-                rep_auc = []
-                rep_aupr = []
+                scale_pos_weight = (len(y_train) - y_train.sum()) / max(y_train.sum(), 1)
+                model = model_fn(scale_pos_weight, seed + repeat)
+                model.fit(X_train_scaled, y_train)
 
-                for fold_idx, (train_idx, test_idx) in enumerate(gkf.split(dataset_repeat, y_repeat, groups_repeat), start=1):
-                    X_train = dataset_repeat.iloc[train_idx][feature_cols]
-                    X_test = dataset_repeat.iloc[test_idx][feature_cols]
-                    y_train = y_repeat.iloc[train_idx]
-                    y_test = y_repeat.iloc[test_idx]
+                y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
 
-                    imputer = SimpleImputer(strategy='median')
-                    X_train_imputed = imputer.fit_transform(X_train)
-                    X_test_imputed = imputer.transform(X_test)
+                auc = roc_auc_score(y_test, y_pred_proba)
+                aupr = average_precision_score(y_test, y_pred_proba)
 
-                    scaler = StandardScaler()
-                    X_train_scaled = scaler.fit_transform(X_train_imputed)
-                    X_test_scaled = scaler.transform(X_test_imputed)
+                rep_auc.append(auc)
+                rep_aupr.append(aupr)
 
-                    scale_pos_weight = (len(y_train) - y_train.sum()) / max(y_train.sum(), 1)
-                    model = model_fn(scale_pos_weight, seed + repeat)
-                    model.fit(X_train_scaled, y_train)
+                fold_metrics['roc_auc'].append(auc)
+                fold_metrics['avg_precision'].append(aupr)
 
-                    y_pred_proba = model.predict_proba(X_test_scaled)[:, 1]
+                rows.append({
+                    'Model': model_name,
+                    'Feature Set': feature_set_name,
+                    'repeat': repeat + 1,
+                    'fold': fold_idx,
+                    'ROC-AUC': auc,
+                    'AUPR': aupr,
+                })
 
-                    auc = roc_auc_score(y_test, y_pred_proba)
-                    aupr = average_precision_score(y_test, y_pred_proba)
-
-                    rep_auc.append(auc)
-                    rep_aupr.append(aupr)
-
-                    fold_metrics['roc_auc'].append(auc)
-                    fold_metrics['avg_precision'].append(aupr)
-
-                    fold_rows.append({
-                        'Model': model_name,
-                        'Feature Set': feature_set_name,
-                        'repeat': repeat + 1,
-                        'fold': fold_idx,
-                        'ROC-AUC': auc,
-                        'AUPR': aupr,
-                    })
-
-                logger.info(
-                    f"     repeat {repeat + 1:02d}/{n_repeats}: "
-                    f"AUROC={np.mean(rep_auc):.4f} | AUPR={np.mean(rep_aupr):.4f}"
-                )
-
-            logger.info(
-                f"     done {feature_set_name}: "
-                f"AUROC={np.mean(fold_metrics['roc_auc']):.4f}±{np.std(fold_metrics['roc_auc']):.4f} | "
-                f"AUPR={np.mean(fold_metrics['avg_precision']):.4f}±{np.std(fold_metrics['avg_precision']):.4f}"
+            repeat_lines.append(
+                f"     repeat {repeat + 1:02d}/{n_repeats}: "
+                f"AUROC={np.mean(rep_auc):.4f} | AUPR={np.mean(rep_aupr):.4f}"
             )
+
+        # Emitted as one record so each pair's block stays contiguous in the log
+        # even while other pairs run concurrently on other threads.
+        logger.info(
+            f"\n{model_name} -> {feature_set_name} ({len(feature_cols)} features)\n"
+            + "\n".join(repeat_lines)
+            + f"\n     done {feature_set_name}: "
+            f"AUROC={np.mean(fold_metrics['roc_auc']):.4f}±{np.std(fold_metrics['roc_auc']):.4f} | "
+            f"AUPR={np.mean(fold_metrics['avg_precision']):.4f}±{np.std(fold_metrics['avg_precision']):.4f}"
+        )
+        return rows
+
+    jobs = [
+        (model_name, model_fn, feature_set_name, feature_cols)
+        for model_name, model_fn in models_to_evaluate.items()
+        for feature_set_name, feature_cols in feature_sets.items()
+    ]
+
+    logger.info(
+        f"Starting CV: models={len(models_to_evaluate)}, feature_sets={len(feature_sets)}, "
+        f"repeats={n_repeats}, folds={n_folds}, pairs={len(jobs)}, train_n_jobs={train_n_jobs}"
+    )
+
+    job_results = Parallel(n_jobs=train_n_jobs, backend='threading')(
+        delayed(_run_pair)(*job) for job in jobs
+    )
+    fold_rows = [row for rows in job_results for row in rows]
 
     logger.info('\n✓ Finished model comparisons')
 
@@ -480,14 +603,25 @@ def main(args):
     id_col = _pick_id_col(dataset)
     _, windowing_col = _pick_time_cols(dataset)
 
-    if not has_bootstrap_probs:
-        raise ValueError('Bootstrap probabilities not found in dataset. Please run bootstrap pipeline first.')
+    logger.info(f'Bootstrap trajectory backend available: {has_bootstrap_probs}')
 
-    # Add worsening columns
-    dataset['lactate_worsening'] = dataset['lactate_gradual'] + dataset['lactate_rapid']
-    dataset['heartrate_worsening'] = dataset['heartrate_gradual'] + dataset['heartrate_rapid']
-    dataset['systolic_worsening'] = dataset['systolic_gradual'] + dataset['systolic_rapid']
-    dataset['multi_marker_mean_worsening'] = dataset[['lactate_worsening', 'heartrate_worsening', 'systolic_worsening']].mean(axis=1)
+    # Add worsening columns (bayes-backed, unsuffixed)
+    bayes_traj_cols = [
+        'lactate_gradual', 'lactate_rapid', 'heartrate_gradual', 'heartrate_rapid',
+        'systolic_gradual', 'systolic_rapid',
+    ]
+    if all(c in dataset.columns for c in bayes_traj_cols):
+        dataset['lactate_worsening'] = dataset['lactate_gradual'] + dataset['lactate_rapid']
+        dataset['heartrate_worsening'] = dataset['heartrate_gradual'] + dataset['heartrate_rapid']
+        dataset['systolic_worsening'] = dataset['systolic_gradual'] + dataset['systolic_rapid']
+        dataset['multi_marker_mean_worsening'] = dataset[['lactate_worsening', 'heartrate_worsening', 'systolic_worsening']].mean(axis=1)
+
+    # Add worsening columns (bootstrap-backed, "_boot"-suffixed)
+    if has_bootstrap_probs:
+        dataset['lactate_worsening_boot'] = dataset['lactate_gradual_boot'] + dataset['lactate_rapid_boot']
+        dataset['heartrate_worsening_boot'] = dataset['heartrate_gradual_boot'] + dataset['heartrate_rapid_boot']
+        dataset['systolic_worsening_boot'] = dataset['systolic_gradual_boot'] + dataset['systolic_rapid_boot']
+        dataset['multi_marker_mean_worsening_boot'] = dataset[['lactate_worsening_boot', 'heartrate_worsening_boot', 'systolic_worsening_boot']].mean(axis=1)
 
     dataset, target_col, feature_sets = prepare_features(
         dataset, id_col, windowing_col, lactate_ts, heartrate_ts, systolic_ts, args.lookback_hours
@@ -496,7 +630,8 @@ def main(args):
     logger.info('Running cross-validation...')
     results_df, summary_df, delta_summary_df = run_cv(
         dataset, target_col, id_col, feature_sets,
-        n_repeats=args.n_repeats, n_folds=args.n_folds, seed=args.seed
+        n_repeats=args.n_repeats, n_folds=args.n_folds, seed=args.seed,
+        train_n_jobs=args.train_n_jobs
     )
 
     logger.info('Saving results...')
@@ -527,7 +662,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--n-repeats',
         type=int,
-        default=5,
+        default=10,
         help='Number of CV repeats'
     )
     parser.add_argument(
@@ -541,6 +676,12 @@ if __name__ == '__main__':
         type=int,
         default=920,
         help='Random seed'
+    )
+    parser.add_argument(
+        '--train-n-jobs',
+        type=int,
+        default=1,
+        help='Threads for evaluating (model, feature set) pairs concurrently'
     )
 
     args = parser.parse_args()

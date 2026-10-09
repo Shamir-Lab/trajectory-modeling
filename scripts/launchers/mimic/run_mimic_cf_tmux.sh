@@ -14,7 +14,7 @@ SESSION_NAME="mimic_cf_${TS}"
 LOG_FILE="$LOG_DIR/mimic_circulatory_failure_${TS}.log"
 
 # Optional args
-N_REPEATS=5
+N_REPEATS=10
 N_FOLDS=5
 LOOKBACK_HOURS=12
 SEED=920

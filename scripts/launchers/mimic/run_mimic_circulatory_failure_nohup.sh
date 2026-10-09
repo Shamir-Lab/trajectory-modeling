@@ -4,8 +4,7 @@
 # Usage:
 #   bash scripts/launchers/mimic/run_mimic_circulatory_failure_nohup.sh \
 #     [--base-dir PATH] [--output-dir PATH] [--lookback-hours N] \
-#     [--n-repeats N] [--n-folds N] [--seed N] \
-#     [--train-n-jobs N] [--train-backend BACKEND]
+#     [--n-repeats N] [--n-folds N] [--seed N] [--train-n-jobs N]
 
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}"
 cd "$REPO_ROOT" || exit 1
@@ -14,11 +13,10 @@ cd "$REPO_ROOT" || exit 1
 BASE_DIR=${BASE_DIR:-/home/gaga/data/physionet/mimic/circulatory_failure}
 OUTPUT_DIR=${OUTPUT_DIR:-./results/mimic}
 LOOKBACK_HOURS=${LOOKBACK_HOURS:-12}
-N_REPEATS=${N_REPEATS:-5}
+N_REPEATS=${N_REPEATS:-10}
 N_FOLDS=${N_FOLDS:-5}
 SEED=${SEED:-920}
 TRAIN_N_JOBS=${TRAIN_N_JOBS:-1}
-TRAIN_BACKEND=${TRAIN_BACKEND:-threading}
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -50,10 +48,6 @@ while [[ $# -gt 0 ]]; do
             TRAIN_N_JOBS="$2"
             shift 2
             ;;
-        --train-backend)
-            TRAIN_BACKEND="$2"
-            shift 2
-            ;;
         *)
             shift
             ;;
@@ -72,7 +66,6 @@ nohup python scripts/analysis/mimic/mimic_circulatory_failure_analysis.py \
     --n-folds "$N_FOLDS" \
     --seed "$SEED" \
     --train-n-jobs "$TRAIN_N_JOBS" \
-    --train-backend "$TRAIN_BACKEND" \
     > logs/outs/mimic/mimic_circulatory_failure_analysis.out \
     2> logs/errs/mimic/mimic_circulatory_failure_analysis.err &
 
