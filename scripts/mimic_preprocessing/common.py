@@ -184,6 +184,75 @@ def aggregate_vitals_labs(vitals_df: pd.DataFrame, labs_df: pd.DataFrame,
     return vitals_labs_pivot
 
 
+# Cohort criteria shared by all MIMIC tasks (as in the thesis Methods):
+# adults aged 18-90 with an ICU stay of at least 2 days and at least
+# MIN_TARGET_MEASUREMENTS measurements of the target clinical parameter.
+MIN_ICU_LOS_DAYS = 2.0
+MIN_TARGET_MEASUREMENTS = 5
+ICU_LOS_SQL = (
+    "EXISTS (SELECT 1 FROM icustays icu WHERE icu.hadm_id = a.hadm_id "
+    f"AND icu.los::DOUBLE >= {MIN_ICU_LOS_DAYS})"
+)
+
+# Missing-data handling (as in the thesis Methods)
+FFILL_LIMIT = 3              # consecutive fills for vitals and labs
+MISSINGNESS_THRESHOLD = 0.7  # drop columns with more missing values than this
+UNBOUNDED_FFILL_COLS = ("age", "gender")  # plus weight columns (low variance)
+
+
+def ffill_within_stay(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
+    """
+    Forward-fill within each stay (df must be sorted by id and time): static
+    and low-variance parameters (age, gender, weight) without limit, all other
+    columns for at most FFILL_LIMIT consecutive intervals.
+    """
+    df = df.copy()
+    cols = [c for c in df.columns if c != id_col]
+    unbounded = [c for c in cols if c in UNBOUNDED_FFILL_COLS or c.lower().startswith("weight")]
+    capped = [c for c in cols if c not in unbounded]
+    grouped = df.groupby(id_col, sort=False)
+    if capped:
+        df[capped] = grouped[capped].ffill(limit=FFILL_LIMIT)
+    if unbounded:
+        df[unbounded] = grouped[unbounded].ffill()
+    return df
+
+
+def fetch_vasopressor_starts(
+    conn: duckdb.DuckDBPyConnection,
+    hadm_ids: List[int],
+    mv_items: Tuple[int, ...],
+    cv_items: Tuple[int, ...],
+    out_col: str,
+    seconds_per_unit: float,
+) -> pd.DataFrame:
+    """
+    First vasopressor start per admission, in units since admission, from both
+    MetaVision (inputevents_mv.starttime) and CareVue (inputevents_cv.charttime)
+    records, so that patients from both MIMIC-III eras are covered.
+    """
+    query = f"""
+    SELECT hadm_id, MIN(t) AS {out_col}
+    FROM (
+        SELECT a.hadm_id::INT AS hadm_id,
+               EXTRACT(EPOCH FROM (ie.starttime::timestamp - a.admittime::timestamp)) / {seconds_per_unit} AS t
+        FROM inputevents_mv ie
+        INNER JOIN admissions a ON ie.hadm_id = a.hadm_id
+        WHERE ie.itemid IN {tuple(mv_items)} AND a.hadm_id::INT IN {tuple(hadm_ids)}
+        UNION ALL
+        SELECT a.hadm_id::INT AS hadm_id,
+               EXTRACT(EPOCH FROM (ie.charttime::timestamp - a.admittime::timestamp)) / {seconds_per_unit} AS t
+        FROM inputevents_cv ie
+        INNER JOIN admissions a ON ie.hadm_id = a.hadm_id
+        WHERE ie.itemid IN {tuple(cv_items)} AND a.hadm_id::INT IN {tuple(hadm_ids)}
+    )
+    GROUP BY hadm_id
+    """
+    df = conn.execute(query).fetchdf()
+    df.columns = df.columns.str.lower()
+    return df
+
+
 def drop_high_missing_columns(df: pd.DataFrame, threshold: float = 0.7, exclude_cols=None):
     """
     Drop columns with missing values above threshold after forward fill.

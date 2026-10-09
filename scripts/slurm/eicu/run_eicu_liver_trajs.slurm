@@ -23,7 +23,7 @@ mkdir -p "$LOG_ROOT/outs" "$LOG_ROOT/errs"
 cd "$REPO_ROOT" || exit 1
 
 # Activate conda environment
-source /home/gaga/tamarw1/anaconda3/etc/profile.d/conda.sh
+source "${CONDA_SH:-/home/gaga/tamarw1/anaconda3/etc/profile.d/conda.sh}"
 conda activate pymc_env
 
 # Cohort splitting
@@ -35,7 +35,7 @@ echo "Starting eICU LIVER TRAJS run at $(date)"
 echo "Cohort: 795 patients, 4,978 samples"
 echo ""
 
-python "$REPO_ROOT/scripts/traj_scripts/eicu/liver_trajs.py" \
+python "$REPO_ROOT/scripts/trajectory/eicu/liver_trajs.py" \
     --input "$DATA_ROOT/eicu/liver/bilirubin_timeseries.csv" \
     --pred-dataset "$DATA_ROOT/eicu/liver/liver_prediction_dataset.csv" \
     --output "$DATA_ROOT/eicu/liver/liver_trajectory_probs.csv" \
@@ -52,6 +52,11 @@ EXIT_CODE=$?
 
 echo ""
 echo "eICU LIVER TRAJS run completed at $(date) with exit code $EXIT_CODE"
+
+# Attempt to clean PyTensor cache for this job (best-effort)
+if [ -f "$REPO_ROOT/scripts/slurm/cleanup_pytensor_cache.sh" ]; then
+    bash "$REPO_ROOT/scripts/slurm/cleanup_pytensor_cache.sh" || true
+fi
 
 # Exit with the same code as the Python script
 exit $EXIT_CODE

@@ -23,7 +23,7 @@ mkdir -p "$LOG_ROOT/outs" "$LOG_ROOT/errs"
 cd "$REPO_ROOT" || exit 1
 
 # Activate conda environment
-source /home/gaga/tamarw1/anaconda3/etc/profile.d/conda.sh
+source "${CONDA_SH:-/home/gaga/tamarw1/anaconda3/etc/profile.d/conda.sh}"
 conda activate pymc_env
 
 # Cohort splitting
@@ -35,7 +35,7 @@ COHORT_INDEX=${SLURM_ARRAY_TASK_ID}
 echo "Starting MIMIC CIRCULATORY FAILURE TRAJS run at $(date)"
 echo ""
 
-python "$REPO_ROOT/scripts/traj_scripts/mimic/circulatory_failure_trajs.py" \
+python "$REPO_ROOT/scripts/trajectory/mimic/circulatory_failure_trajs.py" \
 		--biomarker all \
 		--data-dir "$DATA_ROOT/mimic/circulatory_failure" \
 		--pred-dataset "$DATA_ROOT/mimic/circulatory_failure/circulatory_failure_prediction_dataset.csv" \
@@ -48,5 +48,9 @@ EXIT_CODE=$?
 
 echo ""
 echo "MIMIC CIRCULATORY FAILURE TRAJS run completed at $(date) with exit code $EXIT_CODE"
+
+if [ -f "$REPO_ROOT/scripts/slurm/cleanup_pytensor_cache.sh" ]; then
+	bash "$REPO_ROOT/scripts/slurm/cleanup_pytensor_cache.sh" || true
+fi
 
 exit $EXIT_CODE

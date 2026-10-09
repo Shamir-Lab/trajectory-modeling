@@ -27,10 +27,14 @@ from common import (
     fetch_vitals_labs,
     ensure_time_day,
     aggregate_vitals_labs,
+    ffill_within_stay,
+    ICU_LOS_SQL,
+    MIN_TARGET_MEASUREMENTS,
+    MISSINGNESS_THRESHOLD,
     drop_high_missing_columns,
 )
 
-OUTPUT_DIR = Path("/home/gaga/data/physionet/mimic/aki")
+OUTPUT_DIR = Path(os.environ.get("TRAJ_DATA_ROOT", "/home/gaga/data/physionet")) / "mimic" / "aki"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 print("=" * 80)
@@ -40,7 +44,7 @@ print("=" * 80)
 paths = MIMICPaths()
 conn = connect_db(paths.db_path)
 
-hadm_query = """
+hadm_query = f"""
 SELECT 
     i.subject_id::INTEGER AS subject_id,
     i.hadm_id::INTEGER AS hadm_id,
@@ -58,7 +62,7 @@ INNER JOIN patients p ON i.subject_id = p.subject_id
 INNER JOIN admissions a ON i.hadm_id = a.hadm_id
 WHERE 
     CAST((a.admittime::DATE - p.dob::DATE) / 365.25 AS INT) BETWEEN 18 AND 90
-    AND CAST(a.dischtime::DATE - a.admittime::DATE AS REAL) >= 2.0
+    AND {ICU_LOS_SQL}
 """
 
 hadm_df = conn.execute(hadm_query).fetchdf()
@@ -97,7 +101,7 @@ hadm_enriched = hadm_unique.merge(baseline_creat_df, on="hadm_id", how="inner")
 
 # Filter patients with sufficient creatinine measurements
 creat_counts = creat_df.groupby("hadm_id").size()
-valid_hadm_ids = creat_counts[creat_counts >= 5].index.tolist()
+valid_hadm_ids = creat_counts[creat_counts >= MIN_TARGET_MEASUREMENTS].index.tolist()
 
 creatinine_ts = creat_df[creat_df["hadm_id"].isin(valid_hadm_ids)].merge(
     hadm_enriched[["hadm_id", "baseline_creatinine", "age", "gender", "hospital_expire_flag"]],
@@ -168,25 +172,11 @@ WITH dialysis_procedures AS (
         AND i.hadm_id::INT IN {hadm_ids}
     GROUP BY i.hadm_id
 
-    UNION
-
-    -- 4. ICD-9 Diagnosis Codes
-    SELECT DISTINCT
-        i.hadm_id::INT as hadm_id,
-        0.0 as dialysis_start_time,
-        'diagnoses_icd' as source
-    FROM diagnoses_icd d
-    INNER JOIN icustays i ON d.subject_id = i.subject_id AND d.hadm_id = i.hadm_id
-    WHERE
-        (
-            d.icd9_code LIKE '3995%' OR
-            d.icd9_code LIKE '5498%' OR
-            d.icd9_code LIKE 'V451%' OR
-            d.icd9_code LIKE 'V5631%' OR
-            d.icd9_code LIKE 'V560%' OR
-            d.icd9_code LIKE 'V561%'
-        )
-        AND i.hadm_id::INT IN {hadm_ids}
+    -- ICD-9 codes are not used: they carry no timestamp, so they cannot place
+    -- dialysis initiation inside a prediction window. (The former ICD block
+    -- assigned them time 0.0, which through MIN() below overwrote the real
+    -- start time of every admission that also had a timed record; 3995 and
+    -- 5498 are procedure codes and never matched in diagnoses_icd anyway.)
 )
 SELECT
     hadm_id,
@@ -300,11 +290,11 @@ if len(vitals_df) > 0 and len(labs_df) > 0:
 
     # Forward-fill imputation within each admission
     hadm_pred = hadm_pred.sort_values(["hadm_id", "time_day"])
-    hadm_pred = hadm_pred.set_index("hadm_id").groupby(level=0).fillna(method="ffill").reset_index()
+    hadm_pred = ffill_within_stay(hadm_pred, "hadm_id")
 
-    # Drop columns with >20% missing (eICU-style)
+    # Drop columns with >70% missing
     missing_pct = hadm_pred.isnull().mean()
-    cols_to_drop = missing_pct[missing_pct > 0.2].index.tolist()
+    cols_to_drop = missing_pct[missing_pct > MISSINGNESS_THRESHOLD].index.tolist()
     for col in ["hadm_id", "time_day", "creatinine_mean", "hospital_expire_flag", "age", "gender", "baseline_creatinine"]:
         if col in cols_to_drop:
             cols_to_drop.remove(col)

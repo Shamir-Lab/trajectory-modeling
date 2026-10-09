@@ -7,7 +7,6 @@ from __future__ import annotations
 import pandas as pd
 from dataclasses import dataclass
 from typing import Optional, Dict, Callable
-from lifelines import CoxTimeVaryingFitter
 from .pipeline import compute_bootstrap_trajectory_covariates_parallel
 from ..bayes.classify import flags_from_traj
 import warnings
@@ -36,17 +35,16 @@ class BootstrapConfig:
     label_map: Optional[Dict[str, str]] = None
 
 
-class BootstrapTrajPS:
-    """
-    Bootstrap-based trajectory probability computation.
-    
-    Fast alternative to BayesianTrajPS using:
+class BootstrapTraj:
+    """Bootstrap-based trajectory probability computation.
+
+    Fast alternative to BayesianTraj using:
     - Bootstrap resampling for uncertainty quantification
     - Cubic splines for smooth fits
     - Same classification logic as Bayesian backend
-    
+
     Typically 10-100x faster than MCMC with comparable results.
-    
+
     Example
     -------
     >>> config = BootstrapConfig(
@@ -55,57 +53,30 @@ class BootstrapTrajPS:
     ...     flat_thr=10.0,
     ...     decline_thr=30.0
     ... )
-    >>> model = BootstrapTrajPS(config)
+    >>> model = BootstrapTraj(config)
     >>> probs = model.embed(lab_data)
     """
-    
+
     name = "bootstrap"
-    
+
     def __init__(self, cfg: BootstrapConfig | None = None):
-        """
-        Initialize bootstrap trajectory model.
-        
+        """Initialize bootstrap trajectory model.
+
         Parameters
         ----------
         cfg : BootstrapConfig, optional
             Configuration (uses defaults if None)
         """
         self.cfg = cfg or BootstrapConfig()
-        self.ctv_ = None
-    
-    def fit(self, counting_process_df: pd.DataFrame) -> "BootstrapTrajPS":
-        """
-        Fit a time-varying Cox model using trajectory probabilities.
-        
-        Parameters
-        ----------
-        counting_process_df : DataFrame
-            Counting process format with trajectory probabilities
-            
-        Returns
-        -------
-        self
-        """
-        ctv = CoxTimeVaryingFitter()
-        ctv.fit(
-            counting_process_df,
-            id_col=self.cfg.pids,
-            start_col="start",
-            stop_col="stop",
-            event_col="treatment"
-        )
-        self.ctv_ = ctv
-        return self
-    
+
     def embed(self, lab_long_df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Compute trajectory probabilities using bootstrap resampling.
-        
+        """Compute trajectory probabilities using bootstrap resampling.
+
         Parameters
         ----------
         lab_long_df : DataFrame
             Long-format lab data with columns [pids, time_col, values]
-            
+
         Returns
         -------
         DataFrame
@@ -131,3 +102,7 @@ class BootstrapTrajPS:
             label_map=self.cfg.label_map,
             progressbar=self.cfg.progressbar
         )
+
+
+# Backward-compatibility alias — will be removed in a future version.
+BootstrapTrajPS = BootstrapTraj

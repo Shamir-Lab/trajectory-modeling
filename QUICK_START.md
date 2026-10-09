@@ -15,14 +15,14 @@ python scripts/analysis/mimic/mimic_sepsis_analysis.py --cv-repeats 1 --cv-split
 
 ### Option 2: run with nohup launcher
 ```bash
-./scripts/launchers/hirid/run_hirid_liver_nohup.sh --train-n-jobs 4
-tail -f logs/outs/hirid/hirid_liver_analysis.out
+./scripts/launchers/hirid/run_hirid_circulatory_failure_nohup.sh --train-n-jobs 4
+tail -f logs/outs/hirid/hirid_circulatory_failure_analysis.out
 ```
 
 ### Option 3: run with tmux launcher
 ```bash
-./scripts/launchers/eicu/run_eicu_aki_tmux.sh --train-n-jobs 8 --train-backend threads
-tmux attach -t eicu_aki_analysis
+./scripts/launchers/hirid/run_hirid_cf_tmux.sh --train-n-jobs 8 --train-backend threads
+tmux attach -t hirid_cf_analysis
 ```
 
 ### Option 4: trajectory-only smoke test
@@ -46,10 +46,6 @@ python scripts/analysis/mimic/mimic_ventilator_analysis.py
 ### HiRiD
 ```
 python scripts/analysis/hirid/hirid_circulatory_failure_analysis.py
-python scripts/analysis/hirid/hirid_sepsis_analysis.py
-python scripts/analysis/hirid/hirid_liver_analysis.py
-python scripts/analysis/hirid/hirid_aki_analysis.py
-python scripts/analysis/hirid/hirid_ventilator_analysis.py
 ```
 
 ### eICU
@@ -71,8 +67,8 @@ python scripts/analysis/eicu/eicu_ventilator_analysis.py
 |------|-------|---------|---------|
 | MIMIC (quick test) | 1 | threading | `python scripts/analysis/mimic/mimic_sepsis_analysis.py --cv-repeats 2 --cv-splits 2` |
 | MIMIC (production) | 4 | threads | `./scripts/launchers/mimic/run_mimic_sepsis_nohup.sh --train-n-jobs 4` |
-| HiRiD (production) | 8 | threads | `./scripts/launchers/hirid/run_hirid_liver_nohup.sh --train-n-jobs 8 --train-backend threads` |
-| eICU (all cores) | -1 | processes | `./scripts/launchers/eicu/run_eicu_ventilator_nohup.sh --train-n-jobs -1 --train-backend processes` |
+| HiRiD (production) | 8 | threads | `./scripts/launchers/hirid/run_hirid_circulatory_failure_nohup.sh --train-n-jobs 8 --train-backend threads` |
+| eICU (all cores) | -1 | processes | `./scripts/launchers/eicu/run_eicu_circulatory_failure_nohup.sh --train-n-jobs -1 --train-backend processes` |
 
 ### Parallelization Flags
 
@@ -110,10 +106,10 @@ kill $(cat .mimic_sepsis_analysis.pid)
 ### tmux (interactive)
 ```bash
 # Start
-./scripts/launchers/hirid/run_hirid_liver_tmux.sh --train-n-jobs 4
+./scripts/launchers/hirid/run_hirid_cf_tmux.sh --train-n-jobs 4
 
 # Attach
-tmux attach -t hirid_liver_analysis
+tmux attach -t hirid_cf_analysis
 
 # Detach (Ctrl+B, then D)
 # Kill session
@@ -148,7 +144,7 @@ python scripts/analysis/mimic/mimic_sepsis_analysis.py --cv-repeats 1 --cv-split
 
 ### Full Production Run (4 hours, parallelized)
 ```bash
-./scripts/launchers/hirid/run_hirid_sepsis_nohup.sh --train-n-jobs 8 --train-backend threads
+./scripts/launchers/hirid/run_hirid_circulatory_failure_nohup.sh --train-n-jobs 8 --train-backend threads
 ```
 
 ### Batch Run All MIMIC Tasks
@@ -168,13 +164,13 @@ done
 ```bash
 # Run all sepsis tasks in parallel tmux sessions
 ./scripts/launchers/mimic/run_mimic_sepsis_tmux.sh --train-n-jobs 4
-./scripts/launchers/hirid/run_hirid_sepsis_tmux.sh --train-n-jobs 4
-./scripts/launchers/eicu/run_eicu_sepsis_tmux.sh --train-n-jobs 4
+./scripts/launchers/hirid/run_hirid_cf_tmux.sh --train-n-jobs 4
+./scripts/launchers/eicu/run_eicu_circulatory_failure_nohup.sh --train-n-jobs 4
 
 # Compare results
-echo "MIMIC:" && tail -1 results/mimic/sepsis/*_cv_results.csv
-echo "HiRiD:" && tail -1 results/hirid/sepsis/*_cv_results.csv
-echo "eICU:" && tail -1 results/eicu/sepsis/*_cv_results.csv
+echo "MIMIC:" && tail -1 results/mimic/circulatory_failure/*_cv_results.csv
+echo "HiRiD:" && tail -1 results/hirid/circulatory_failure/*_cv_results.csv
+echo "eICU:" && tail -1 results/eicu/circulatory_failure/*_cv_results.csv
 ```
 
 ---
@@ -256,4 +252,4 @@ Reduce parallel workers or switch to threading:
 
 ---
 
-For detailed documentation, see: `ANALYSIS_SCRIPTS_README.md` and `CONVERSION_SUMMARY.md`
+For detailed documentation, see `docs/analysis/ANALYSIS_SCRIPTS_README.md`.

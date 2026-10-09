@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import warnings
 from pathlib import Path
 
@@ -199,31 +200,55 @@ def build_feature_sets(dataset: pd.DataFrame):
     if "gender" in dataset.columns:
         dataset["gender"] = dataset["gender"].map({"M": 1, "F": 0})
 
+    # Static: demographics and the admission baseline of each target parameter
     static_features = [c for c in ["age", "gender"] if c in dataset.columns]
+    static_features += [c for c in dataset.columns if c.startswith("baseline_")]
 
-    exclude_keywords = ["stable", "gradual", "rapid", "worsening", "marker", "trend", "change", "boot"]
-    dynamic_labs = [
-        col
-        for col in dataset.columns
-        if any(col.startswith(prefix) for prefix in ["min_", "mean_", "max_"])
-        and not any(keyword in col.lower() for keyword in exclude_keywords)
-    ]
-    dynamic_vitals = [
-        col
-        for col in dataset.columns
-        if any(x in col for x in ["heart_rate", "respiratory_rate", "o2_sat", "systolic", "diastolic", "mean_bp", "temperature"])
-    ]
-    dynamic_features = list(dict.fromkeys(dynamic_labs + dynamic_vitals))
-
+    # Trajectory columns from both backends, kept strictly disjoint: bayes-sourced
+    # columns are unsuffixed, bootstrap-sourced columns carry a "_boot" suffix
+    # (see main()'s dual-backend merge). Never combined into the same feature
+    # set — mixing them would defeat the point of comparing the two trajectory
+    # representations independently (mirrors build_feature_sets() in
+    # ckd_trajectory_analysis.py).
     lactate_traj = ["lactate_stable", "lactate_gradual", "lactate_rapid", "lactate_worsening"]
     heartrate_traj = ["heartrate_stable", "heartrate_gradual", "heartrate_rapid", "heartrate_worsening"]
     systolic_traj = ["systolic_stable", "systolic_gradual", "systolic_rapid", "systolic_worsening"]
     multi_traj = lactate_traj + heartrate_traj + systolic_traj + ["multi_marker_mean_worsening"]
 
+    lactate_traj_boot = [f"{c}_boot" for c in lactate_traj]
+    heartrate_traj_boot = [f"{c}_boot" for c in heartrate_traj]
+    systolic_traj_boot = [f"{c}_boot" for c in systolic_traj]
+    multi_traj_boot = lactate_traj_boot + heartrate_traj_boot + systolic_traj_boot + ["multi_marker_mean_worsening_boot"]
+
     lactate_summary = [c for c in dataset.columns if c.startswith("lactate_") and c.endswith("h")]
     heartrate_summary = [c for c in dataset.columns if c.startswith("heartrate_") and c.endswith("h")]
     systolic_summary = [c for c in dataset.columns if c.startswith("systolic_") and c.endswith("h")]
     multi_summary = lactate_summary + heartrate_summary + systolic_summary
+
+    # Anything already classified as trajectory (either backend) or summary must
+    # not also leak into "dynamic" via the substring-based vital-sign scan below
+    # (e.g. "systolic_stable", "systolic_stable_boot", and "systolic_mean_12h"
+    # all contain "systolic") — that would silently contaminate "Baseline" with
+    # trajectory/summary signal it's supposed to exclude, and would do so
+    # asymmetrically depending on which backend(s) happen to be loaded.
+    non_baseline_cols = set(multi_traj + multi_traj_boot + multi_summary)
+
+    dynamic_labs = [
+        col
+        for col in dataset.columns
+        if any(col.startswith(prefix) for prefix in ["min_", "mean_", "max_"])
+        and col not in non_baseline_cols
+    ]
+    dynamic_vitals = [
+        col
+        for col in dataset.columns
+        if any(x in col for x in ["heart_rate", "respiratory_rate", "o2_sat", "systolic", "diastolic", "mean_bp", "temperature"])
+        and col not in non_baseline_cols
+    ]
+    dynamic_features = [
+        c for c in dict.fromkeys(dynamic_labs + dynamic_vitals)
+        if c not in static_features  # e.g. "baseline_systolic" contains "systolic"
+    ]
 
     baseline_features = static_features + dynamic_features
     if len(baseline_features) == 0:
@@ -232,15 +257,34 @@ def build_feature_sets(dataset: pd.DataFrame):
     def _present(cols):
         return [c for c in list(dict.fromkeys(cols)) if c in dataset.columns]
 
+    # Column presence alone isn't enough to detect whether a backend has real
+    # data: main() fills any missing bayes-convention trajectory column with
+    # an all-NaN placeholder for uniformity, so the columns always exist even
+    # when that backend was never loaded.
+    def _has_data(cols):
+        present = _present(cols)
+        return len(present) > 0 and bool(dataset[present].notna().any().any())
+
+    has_bayes_traj = _has_data(lactate_traj)
+    has_boot_traj = _has_data(lactate_traj_boot)
+    logger.info(f"Trajectory backends available for feature sets: bayes={has_bayes_traj}, bootstrap={has_boot_traj}")
+
     feature_sets = {
         "Baseline": _present(baseline_features),
-        "Baseline + Single Trajectory": _present(baseline_features + lactate_traj),
-        "Baseline + Multi Trajectory": _present(baseline_features + multi_traj),
         "Baseline + Single Summary": _present(baseline_features + lactate_summary),
         "Baseline + Multi Summary": _present(baseline_features + multi_summary),
-        "Baseline + Single Trajectory + Summary": _present(baseline_features + lactate_traj + lactate_summary),
-        "Baseline + Multi Trajectory + Summary": _present(baseline_features + multi_traj + multi_summary),
     }
+    if has_bayes_traj:
+        feature_sets["Baseline + Single Trajectory"] = _present(baseline_features + lactate_traj)
+        feature_sets["Baseline + Multi Trajectory"] = _present(baseline_features + multi_traj)
+        feature_sets["Baseline + Single Trajectory + Summary"] = _present(baseline_features + lactate_traj + lactate_summary)
+        feature_sets["Baseline + Multi Trajectory + Summary"] = _present(baseline_features + multi_traj + multi_summary)
+    if has_boot_traj:
+        feature_sets["Baseline + Single Trajectory (Bootstrap)"] = _present(baseline_features + lactate_traj_boot)
+        feature_sets["Baseline + Multi Trajectory (Bootstrap)"] = _present(baseline_features + multi_traj_boot)
+        feature_sets["Baseline + Single Trajectory + Summary (Bootstrap)"] = _present(baseline_features + lactate_traj_boot + lactate_summary)
+        feature_sets["Baseline + Multi Trajectory + Summary (Bootstrap)"] = _present(baseline_features + multi_traj_boot + multi_summary)
+
     feature_sets = {k: v for k, v in feature_sets.items() if len(v) > 0}
 
     return target_col, feature_sets
@@ -498,13 +542,13 @@ def main():
     parser.add_argument(
         "--base-dir",
         type=str,
-        default="/home/gaga/data/physionet/hirid/circulatory_failure",
+        default=os.path.join(os.environ.get("TRAJ_DATA_ROOT", "/home/gaga/data/physionet"), "hirid", "circulatory_failure"),
         help="Directory containing HiRiD circulatory failure data",
     )
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="/home/gaga/tamarw1/trajectory-modeling/results/hirid",
+        default=os.path.join(os.environ.get("TRAJ_RESULTS_ROOT", str(Path(__file__).resolve().parents[3] / "results")), "hirid"),
         help="Directory to save output tables",
     )
     parser.add_argument(
@@ -550,22 +594,9 @@ def main():
     base_dir = next((p for p in base_candidates if p.exists()), Path(args.base_dir))
     logger.info(f"BASE_DIR: {base_dir}")
 
-    pred_stem_candidates = [
-        "circulatory_failure_prediction_dataset_with_bootstrap_probs",
-        "circulatory_failure_prediction_dataset",
-    ]
-
-    for stem in pred_stem_candidates:
-        try:
-            dataset = _load_named_table(base_dir, stem)
-            pred_source_stem = stem
-            break
-        except FileNotFoundError:
-            continue
-    else:
-        raise FileNotFoundError("Could not find prediction dataset (raw or pre-merged bootstrap version).")
-
-    logger.info(f"Loaded prediction dataset ({pred_source_stem}): {len(dataset):,} samples")
+    pred_stem_bootstrap = "circulatory_failure_prediction_dataset_with_bootstrap_probs"
+    pred_stem_bayes = "circulatory_failure_prediction_dataset_with_probs"
+    pred_stem_base = "circulatory_failure_prediction_dataset"
 
     expected_traj_cols = [
         "lactate_stable",
@@ -578,24 +609,88 @@ def main():
         "systolic_gradual",
         "systolic_rapid",
     ]
-    has_bootstrap_probs = all(c in dataset.columns for c in expected_traj_cols)
-    logger.info(f"Bootstrap trajectory features already present: {has_bootstrap_probs}")
+
+    def _try_load(stem):
+        try:
+            return _load_named_table(base_dir, stem)
+        except FileNotFoundError:
+            return None
+
+    dataset_boot = _try_load(pred_stem_bootstrap)
+    dataset_bayes = _try_load(pred_stem_bayes)
+
+    has_boot_merged = dataset_boot is not None and all(c in dataset_boot.columns for c in expected_traj_cols)
+    has_bayes_merged = dataset_bayes is not None and all(c in dataset_bayes.columns for c in expected_traj_cols)
+    logger.info(f"Pre-merged bootstrap trajectory dataset present: {has_boot_merged}")
+    logger.info(f"Pre-merged bayes trajectory dataset present: {has_bayes_merged}")
+
+    # need_raw_bootstrap: only set when no pre-merged bootstrap dataset was
+    # found, so raw per-biomarker bootstrap files are tried as a fallback
+    # below (mirrors the pre-existing single-backend fallback behavior).
+    need_raw_bootstrap = False
+
+    if has_boot_merged and has_bayes_merged:
+        # Both backends available: merge into one working dataframe, keeping the
+        # two trajectory representations disjoint (bayes columns unsuffixed,
+        # bootstrap columns "_boot"-suffixed) so build_feature_sets() can build
+        # independently comparable "Baseline + ..." / "Baseline + ... (Bootstrap)"
+        # feature sets, matching the poster pipeline's (Bootstrap)-suffix
+        # convention. Never blended into the same column/feature set.
+        logger.info("Both trajectory backends found — merging into one working dataframe.")
+        id_col = _pick_id_col(dataset_boot)
+        _, windowing_col = _pick_time_cols(dataset_boot)
+        key_cols = [id_col, windowing_col]
+        dataset = dataset_boot.rename(columns={c: f"{c}_boot" for c in expected_traj_cols})
+        dataset = _safe_left_merge(dataset, dataset_bayes[key_cols + expected_traj_cols], key_cols, "bayes_traj")
+        pred_source_stem = f"{pred_stem_bootstrap} + {pred_stem_bayes}"
+    elif has_boot_merged:
+        dataset = dataset_boot
+        pred_source_stem = pred_stem_bootstrap
+        id_col = _pick_id_col(dataset)
+        _, windowing_col = _pick_time_cols(dataset)
+        key_cols = [id_col, windowing_col]
+    elif has_bayes_merged:
+        dataset = dataset_bayes
+        pred_source_stem = pred_stem_bayes
+        id_col = _pick_id_col(dataset)
+        _, windowing_col = _pick_time_cols(dataset)
+        key_cols = [id_col, windowing_col]
+        need_raw_bootstrap = True
+    else:
+        dataset = _load_named_table(base_dir, pred_stem_base)
+        pred_source_stem = pred_stem_base
+        id_col = _pick_id_col(dataset)
+        _, windowing_col = _pick_time_cols(dataset)
+        key_cols = [id_col, windowing_col]
+        need_raw_bootstrap = True
+
+    logger.info(f"Loaded prediction dataset ({pred_source_stem}): {len(dataset):,} samples")
 
     lactate_ts = _load_named_table(base_dir, "lactate_timeseries")
     heartrate_ts = _load_named_table(base_dir, "heartrate_timeseries")
     systolic_ts = _load_named_table(base_dir, "systolic_timeseries")
 
-    id_col = _pick_id_col(dataset)
-    _, windowing_col = _pick_time_cols(dataset)
-    key_cols = [id_col, windowing_col]
-
-    if not has_bootstrap_probs:
-        lactate_boot = _load_named_table(base_dir, "lactate_trajectory_probs_bootstrap")
-        heartrate_boot = _load_named_table(base_dir, "heartrate_trajectory_probs_bootstrap")
-        systolic_boot = _load_named_table(base_dir, "systolic_trajectory_probs_bootstrap")
-        dataset = _safe_left_merge(dataset, lactate_boot, key_cols, "lactate_boot")
-        dataset = _safe_left_merge(dataset, heartrate_boot, key_cols, "heartrate_boot")
-        dataset = _safe_left_merge(dataset, systolic_boot, key_cols, "systolic_boot")
+    if need_raw_bootstrap:
+        # Raw per-biomarker bootstrap files already use the dataset's final
+        # column names directly (lactate_stable, ...), no "prob_*" renaming
+        # needed (unlike the bayes per-cohort files handled by
+        # merge_circulatory_failure_bayes.sh). Suffix with "_boot" only if
+        # bayes columns are already present unsuffixed (has_bayes_merged) so
+        # the two backends stay disjoint; otherwise keep bootstrap unsuffixed
+        # for backward compatibility with existing single-backend runs.
+        suffix = "_boot" if has_bayes_merged else ""
+        try:
+            lactate_boot = _load_named_table(base_dir, "lactate_trajectory_probs_bootstrap")
+            heartrate_boot = _load_named_table(base_dir, "heartrate_trajectory_probs_bootstrap")
+            systolic_boot = _load_named_table(base_dir, "systolic_trajectory_probs_bootstrap")
+            if suffix:
+                for boot_df in (lactate_boot, heartrate_boot, systolic_boot):
+                    boot_df.rename(columns={c: f"{c}{suffix}" for c in boot_df.columns if c not in key_cols}, inplace=True)
+            dataset = _safe_left_merge(dataset, lactate_boot, key_cols, "lactate_boot")
+            dataset = _safe_left_merge(dataset, heartrate_boot, key_cols, "heartrate_boot")
+            dataset = _safe_left_merge(dataset, systolic_boot, key_cols, "systolic_boot")
+        except FileNotFoundError as exc:
+            logger.warning(f"Raw bootstrap trajectory files not found, skipping: {exc}")
 
     for bm in ["lactate", "heartrate", "systolic"]:
         for comp in ["stable", "gradual", "rapid"]:
@@ -607,6 +702,24 @@ def main():
     dataset["heartrate_worsening"] = dataset["heartrate_gradual"] + dataset["heartrate_rapid"]
     dataset["systolic_worsening"] = dataset["systolic_gradual"] + dataset["systolic_rapid"]
     dataset["multi_marker_mean_worsening"] = dataset[["lactate_worsening", "heartrate_worsening", "systolic_worsening"]].mean(axis=1)
+
+    # Same worsening/multi-marker derived features for the bootstrap backend,
+    # only computed when bootstrap-sourced ("_boot"-suffixed) columns are
+    # actually present — otherwise these stay absent, matching the
+    # single-backend case where no Bootstrap feature sets are built at all.
+    boot_traj_cols = [f"{bm}_{comp}_boot" for bm in ["lactate", "heartrate", "systolic"] for comp in ["stable", "gradual", "rapid"]]
+    if any(c in dataset.columns for c in boot_traj_cols):
+        for bm in ["lactate", "heartrate", "systolic"]:
+            for comp in ["stable", "gradual", "rapid"]:
+                col = f"{bm}_{comp}_boot"
+                if col not in dataset.columns:
+                    dataset[col] = np.nan
+        dataset["lactate_worsening_boot"] = dataset["lactate_gradual_boot"] + dataset["lactate_rapid_boot"]
+        dataset["heartrate_worsening_boot"] = dataset["heartrate_gradual_boot"] + dataset["heartrate_rapid_boot"]
+        dataset["systolic_worsening_boot"] = dataset["systolic_gradual_boot"] + dataset["systolic_rapid_boot"]
+        dataset["multi_marker_mean_worsening_boot"] = dataset[
+            ["lactate_worsening_boot", "heartrate_worsening_boot", "systolic_worsening_boot"]
+        ].mean(axis=1)
 
     logger.info(f"Dataset ready with trajectory probabilities: {len(dataset):,} samples")
 

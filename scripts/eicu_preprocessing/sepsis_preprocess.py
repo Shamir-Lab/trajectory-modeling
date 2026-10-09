@@ -10,7 +10,7 @@ Mirrors MIMIC sepsis preprocessing:
 6. Define septic shock outcome (gap=0.5d, window=4d)
    - Lactate ≥4 mmol/L + vasopressor OR mortality
 7. Forward-fill imputation
-8. Drop >20% missing columns
+8. Drop >70% missing columns
 9. First positive event only per patient
 10. Save prediction dataset
 
@@ -24,15 +24,16 @@ sys.path.insert(0, os.path.abspath('src'))
 
 import pandas as pd
 import numpy as np
-from eicu_loader import EICULoader
+from eicu_loader import EICULoader, ffill_within_stay, MIN_TARGET_MEASUREMENTS, MISSINGNESS_THRESHOLD
 from tqdm import tqdm
 
 # Configuration
 PREDICTION_GAP_DAYS = 0.5      # Don't predict events within 12h
 PREDICTION_WINDOW_DAYS = 2.0   # Predict septic shock within 2 days after gap
 LOOKBACK_DAYS = 3.0            # Use 3 days of historical data for features
-MIN_LACTATE_MEASUREMENTS = 3   # Minimum lactate measurements required
-OUTPUT_PATH = '/home/gaga/data/physionet/eicu/sepsis/sepsis_prediction_dataset.csv'
+MIN_LACTATE_MEASUREMENTS = MIN_TARGET_MEASUREMENTS  # Minimum measurements of the target clinical parameter
+_TRAJ_DATA_ROOT = os.environ.get("TRAJ_DATA_ROOT", "/home/gaga/data/physionet")
+OUTPUT_PATH = os.path.join(_TRAJ_DATA_ROOT, "eicu", "sepsis", "sepsis_prediction_dataset.csv")
 
 MAX_PATIENTS = None            # Process full cohort
 
@@ -197,8 +198,11 @@ if len(meds_data) > 0:
     meds = pd.concat(meds_data, ignore_index=True)
     meds['time_day'] = (meds['med_time_hours'] / 24.0).astype(int)
     meds['vasopressor_any'] = 1  # Binary flag for vasopressor use
+    # First vasopressor start per stay (days since unit admission)
+    vaso_start = (meds.groupby('patientunitstayid')['med_time_hours'].min() / 24.0).to_dict()
 else:
     meds = pd.DataFrame()
+    vaso_start = {}
 
 # Vectorized aggregation across all patients
 print("  Aggregating all measurements by day (vectorized)...")
@@ -285,12 +289,12 @@ else:
 # Forward-fill imputation within each patient
 print("\n[6/10] Forward-fill imputation...")
 daily_features = daily_features.sort_values(['stay_id', 'time_day'])
-daily_features = daily_features.set_index('stay_id').groupby(level=0).fillna(method='ffill').reset_index()
+daily_features = ffill_within_stay(daily_features, 'stay_id')
 
-# Drop columns with >20% missing
-print("\n[7/10] Dropping columns with >20% missing...")
+# Drop columns with >70% missing
+print("\n[7/10] Dropping columns with >70% missing...")
 missing_pct = daily_features.isnull().mean()
-cols_to_drop = missing_pct[missing_pct > 0.2].index.tolist()
+cols_to_drop = missing_pct[missing_pct > MISSINGNESS_THRESHOLD].index.tolist()
 if 'stay_id' in cols_to_drop:
     cols_to_drop.remove('stay_id')
 if 'time_day' in cols_to_drop:
@@ -352,9 +356,9 @@ for stay_id, grp in tqdm(daily_features.groupby('stay_id'), desc="  Patients"):
             (patient_lactate['time_days'] <= prediction_end)
         ]
         
-        # Get future vasopressor use
-        future_grp = grp[(grp['time_day'] >= prediction_start) & (grp['time_day'] <= prediction_end)]
-        future_vasopressor = future_grp['vasopressor_any'].max() if 'vasopressor_any' in future_grp.columns else 0
+        # Vasopressor initiation within the prediction window
+        first_vaso = vaso_start.get(stay_id)
+        future_vasopressor = int(first_vaso is not None and prediction_start <= first_vaso <= prediction_end)
         
         if len(future_window) == 0 and mortality_flag == 0:
             excluded_counts['no_future_data'] += 1
@@ -390,7 +394,7 @@ final_stay_ids = prediction_dataset['stay_id'].unique()
 for biomarker, ts_df in [('lactate', lactate_ts), ('wbc', wbc_ts), ('platelets', platelet_ts)]:
     ts_filtered = ts_df[ts_df['stay_id'].isin(final_stay_ids)].copy()
     ts_filtered['time_day'] = ts_filtered['time_days'].astype(int)
-    ts_output = f'/home/gaga/data/physionet/eicu/sepsis/{biomarker}_timeseries.csv'
+    ts_output = os.path.join(_TRAJ_DATA_ROOT, "eicu", "sepsis", f"{biomarker}_timeseries.csv")
     os.makedirs(os.path.dirname(ts_output), exist_ok=True)
     ts_filtered.to_csv(ts_output, index=False)
     print(f"  ✓ Saved {biomarker}: {len(ts_filtered):,} measurements for {len(final_stay_ids):,} patients")

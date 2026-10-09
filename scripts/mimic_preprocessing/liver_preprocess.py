@@ -30,6 +30,10 @@ from common import (
     fetch_vitals_labs,
     ensure_time_day,
     aggregate_vitals_labs,
+    ffill_within_stay,
+    ICU_LOS_SQL,
+    MIN_TARGET_MEASUREMENTS,
+    MISSINGNESS_THRESHOLD,
     drop_high_missing_columns,
 )
 
@@ -44,7 +48,7 @@ paths = MIMICPaths()
 conn = connect_db(paths.db_path)
 
 # Cohort selection
-hadm_query = """
+hadm_query = f"""
 WITH liver_patients AS (
     SELECT DISTINCT a.hadm_id
     FROM admissions a
@@ -70,7 +74,7 @@ INNER JOIN patients p ON a.subject_id = p.subject_id
 INNER JOIN liver_patients lp ON a.hadm_id = lp.hadm_id
 WHERE 
     CAST((a.admittime::DATE - p.dob::DATE) / 365.25 AS INT) BETWEEN 18 AND 90
-    AND CAST(a.dischtime::DATE - a.admittime::DATE AS REAL) >= 2.0
+    AND {ICU_LOS_SQL}
 """
 
 hadm_df = conn.execute(hadm_query).fetchdf()
@@ -118,7 +122,7 @@ baseline_bili = (
 
 # Filter admissions with sufficient measurements
 bili_counts = bili_df.groupby("hadm_id").size()
-valid_hadm_ids = bili_counts[bili_counts >= 3].index.tolist()
+valid_hadm_ids = bili_counts[bili_counts >= MIN_TARGET_MEASUREMENTS].index.tolist()
 
 bili_filtered = bili_df[bili_df["hadm_id"].isin(valid_hadm_ids)].copy()
 hadm_filtered = hadm_df[hadm_df["hadm_id"].isin(valid_hadm_ids)].merge(
@@ -162,11 +166,11 @@ if len(vitals_df) > 0 and len(labs_df) > 0:
 
     # Forward-fill imputation within each admission
     hadm_final = hadm_final.sort_values(["hadm_id", "time_day"])
-    hadm_final = hadm_final.set_index("hadm_id").groupby(level=0).fillna(method="ffill").reset_index()
+    hadm_final = ffill_within_stay(hadm_final, "hadm_id")
 
-    # Drop columns with >20% missing (eICU-style)
+    # Drop columns with >70% missing
     missing_pct = hadm_final.isnull().mean()
-    cols_to_drop = missing_pct[missing_pct > 0.2].index.tolist()
+    cols_to_drop = missing_pct[missing_pct > MISSINGNESS_THRESHOLD].index.tolist()
     for col in ["hadm_id", "time_day", "bilirubin_mean", "hospital_expire_flag", "age", "gender", "baseline_bilirubin"]:
         if col in cols_to_drop:
             cols_to_drop.remove(col)

@@ -45,16 +45,16 @@ install-all:
 	$(PYTHON) -m pip install -e .[all]
 
 traj-hirid-aki:
-	$(PYTHON) scripts/traj_scripts/hirid/hirid_aki_trajs.py
+	$(PYTHON) scripts/trajectory/hirid/aki_trajs.py
 
 traj-hirid-sepsis:
-	$(PYTHON) scripts/traj_scripts/hirid/hirid_sepsis_trajs.py
+	$(PYTHON) scripts/trajectory/hirid/sepsis_trajs.py
 
 traj-hirid-liver:
-	$(PYTHON) scripts/traj_scripts/hirid/hirid_liver_trajs.py
+	$(PYTHON) scripts/trajectory/hirid/liver_trajs.py
 
 traj-hirid-ventilator:
-	$(PYTHON) scripts/traj_scripts/hirid/hirid_ventilator_trajs.py
+	$(PYTHON) scripts/trajectory/hirid/ventilator_trajs.py
 
 analysis-mimic-sepsis:
 	$(PYTHON) scripts/analysis/mimic/mimic_sepsis_analysis.py --cv-repeats 1 --cv-splits 2
@@ -69,7 +69,7 @@ launchers-generate:
 	bash scripts/launchers/generate_launchers.sh
 
 subset-smoke:
-	$(PYTHON) scripts/traj_scripts/run_circulatory_failure_bayes_subset.py --dry-run
+	$(PYTHON) scripts/trajectory/run_circulatory_failure_bayes_subset.py --dry-run
 
 slurm-check-hardcoded:
 	@echo "Checking for hardcoded repo path in scripts/slurm..."

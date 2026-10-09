@@ -12,6 +12,7 @@ Provides:
 from __future__ import annotations
 
 import logging
+import os
 import warnings
 from pathlib import Path
 from typing import Optional
@@ -138,6 +139,11 @@ def safe_left_merge(
 # Biomarker Summary Statistics
 # ============================================================================
 
+# Lookback-window summary statistics (feature set S) are named
+# f"{value_col}{LOOKBACK_SUMMARY_INFIX}{stat}", e.g. "lactate_lb_mean".
+LOOKBACK_SUMMARY_INFIX = "_lb_"
+LOOKBACK_SUMMARY_STATS = ("mean", "max", "min", "change", "trend", "std")
+
 
 def _patient_window_stats(
     id_val,
@@ -167,7 +173,9 @@ def _patient_window_stats(
     rows = []
 
     for w in unique_windows:
-        mask = (times >= w - lookback_hours) & (times <= w)
+        # Select by the windowing column (index day/hour), exactly as the
+        # trajectory backends do, so S and T summarize the same lookback window.
+        mask = (windows >= w - lookback_hours) & (windows <= w)
         wv = values[mask]
         wt = times[mask]
         n = len(wv)
@@ -221,7 +229,9 @@ def biomarker_summary_stats(
     
     Returns:
         DataFrame with columns:
-            [id_col, windowing_col, {value_col}_mean, _max, _min, _change, _trend, _std]
+            [id_col, windowing_col, {value_col}_lb_mean, _lb_max, _lb_min, _lb_change, _lb_trend, _lb_std]
+        The "_lb_" (lookback) infix keeps these distinct from the per-interval
+        aggregates of the same parameter (e.g. MIMIC's daily "lactate_mean").
     """
     # Auto-detect columns
     id_col = pick_id_col(ts_df)
@@ -262,12 +272,7 @@ def biomarker_summary_stats(
         columns=[
             id_col,
             windowing_col,
-            f"{value_col}_mean",
-            f"{value_col}_max",
-            f"{value_col}_min",
-            f"{value_col}_change",
-            f"{value_col}_trend",
-            f"{value_col}_std",
+            *[f"{value_col}{LOOKBACK_SUMMARY_INFIX}{stat}" for stat in LOOKBACK_SUMMARY_STATS],
         ],
     )
     
@@ -285,6 +290,14 @@ def biomarker_summary_stats(
 # ============================================================================
 
 
+def encode_gender(df: pd.DataFrame) -> pd.DataFrame:
+    """Encode a categorical gender column as 1 (male) / 0 (female) / NaN, in place."""
+    if "gender" in df.columns and not pd.api.types.is_numeric_dtype(df["gender"]):
+        first = df["gender"].astype(str).str.strip().str.lower().str[:1]
+        df["gender"] = first.map({"m": 1.0, "f": 0.0})
+    return df
+
+
 def organize_feature_sets(df: pd.DataFrame, id_col: str, windowing_col: str) -> dict[str, list[str]]:
     """
     Auto-organize features into baseline, trajectory, summary stats categories.
@@ -296,10 +309,15 @@ def organize_feature_sets(df: pd.DataFrame, id_col: str, windowing_col: str) -> 
     
     Returns:
         Dictionary with keys:
-        - 'trajectory': trajectory probability columns
-        - 'summary': summary statistic columns
-        - 'baseline': baseline/static features
+        - 'trajectory': trajectory probability columns (T)
+        - 'summary': lookback-window summary statistics of the target parameters (S)
+        - 'baseline': static + dynamic features (SD)
+        - 'static': demographics and admission baselines
+        - 'dynamic': prediction-time (per-interval) vitals and labs
         - 'all_numeric': all numeric columns (excluding ID, windowing, outcome)
+
+    Encode categorical gender with encode_gender() first; non-numeric columns
+    are ignored.
     """
     exclude_cols = {
         id_col, windowing_col,
@@ -330,32 +348,29 @@ def organize_feature_sets(df: pd.DataFrame, id_col: str, windowing_col: str) -> 
         or "_boot" in c
     ]
     
+    # S: only the lookback-window statistics of the target clinical parameters
+    # (biomarker_summary_stats). Per-interval min/max/mean aggregates of vitals
+    # and labs are prediction-time features and belong to SD, whatever their
+    # naming convention ("heartrate_mean" in MIMIC, "mean_BUN" in eICU).
+    summary_suffixes = tuple(f"{LOOKBACK_SUMMARY_INFIX}{stat}" for stat in LOOKBACK_SUMMARY_STATS)
     summary_cols = [
         c for c in numeric_cols
-        if c.endswith("_mean")
-        or c.endswith("_max")
-        or c.endswith("_min")
-        or c.endswith("_change")
-        or c.endswith("_trend")
-        or c.endswith("_std")
-        or "_5d" in c
-        or "_10d" in c
+        if c not in trajectory_cols and c.endswith(summary_suffixes)
     ]
-    
+
     baseline_cols = [
         c for c in numeric_cols
         if c not in trajectory_cols
         and c not in summary_cols
     ]
-    
-    # Further separate static vs dynamic in baseline
-    static_tokens = {
-        "age", "gender", "sex", "baseline", "admit", "admission",
-        "ethnicity", "race", "height", "weight", "bmi", "baseline_",
-    }
+
+    # Static: demographics, weight, and the admission baseline of each target
+    # parameter. Everything else in SD changes between prediction windows (dynamic).
+    static_names = {"age", "gender", "sex", "ethnicity", "race", "height", "bmi"}
     static_cols = [
         c for c in baseline_cols
-        if any(tok in c.lower() for tok in static_tokens)
+        if c.lower() in static_names
+        or c.lower().startswith(("baseline_", "admission_", "weight"))
     ]
     dynamic_cols = [c for c in baseline_cols if c not in static_cols]
     
@@ -382,23 +397,24 @@ def get_dataset_config(dataset: str) -> dict:
         dataset: 'mimic', 'hirid', or 'eicu'
     
     Returns:
-        Dictionary with keys: id_col, time_col_base (hours/days), base_path
+        Dictionary with keys: id_col, base_path.
+        Time resolution varies by task, not dataset: CF uses time_hours/time_hour
+        (hourly); AKI/liver/sepsis/ventilator use time_days/time_day (daily).
+        Use pick_time_cols() at runtime to detect the correct columns.
     """
+    _traj_data_root = Path(os.environ.get("TRAJ_DATA_ROOT", "/home/gaga/data/physionet"))
     configs = {
         "mimic": {
             "id_col": "hadm_id",
-            "time_unit": "hours",  # MIMIC uses hours
-            "base_path": Path("/home/gaga/data/physionet/mimic"),
+            "base_path": _traj_data_root / "mimic",
         },
         "hirid": {
             "id_col": "patientid",
-            "time_unit": "hours",  # HiRiD uses hours
-            "base_path": Path("/home/gaga/data/physionet/hirid"),
+            "base_path": _traj_data_root / "hirid",
         },
         "eicu": {
             "id_col": "stay_id",
-            "time_unit": "days",  # eICU uses days
-            "base_path": Path("/home/gaga/data/physionet/eicu"),
+            "base_path": _traj_data_root / "eicu",
         },
     }
     

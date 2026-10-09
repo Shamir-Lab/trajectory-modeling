@@ -22,16 +22,11 @@ The project has been refactored to focus on **trajectory feature extraction** fo
 
 ## Backward Compatibility
 
-**Phase 1** (Current): Package supports both names
-```python
-# Both work
-from traj_features.backends.bayes import BayesianTrajPS
-from traj_ps.backends.bayes import BayesianTrajPS  # Still works via alias
-```
+Phase 1: The project aims for a transitional period where old import paths may be aliased for compatibility; verify availability in your installed package.
 
-**Phase 2** (Future): `traj_ps` deprecated with warnings
+Phase 2 (Future): `traj_ps` will be deprecated with warnings.
 
-**Phase 3** (Final): `traj_ps` removed
+Phase 3 (Final): `traj_ps` will be removed.
 
 ## Migration Steps
 
@@ -78,8 +73,8 @@ python scripts/predict_ps.py --backend bayes
 
 **New:**
 ```bash
-python scripts/traj_scripts/hirid/hirid_ventilator_trajs.py
-python scripts/traj_scripts/run_circulatory_failure_bayes_subset.py --dry-run
+python scripts/trajectory/hirid/ventilator_trajs.py
+python scripts/trajectory/run_circulatory_failure_bayes_subset.py --dry-run
 ```
 
 ## New Features

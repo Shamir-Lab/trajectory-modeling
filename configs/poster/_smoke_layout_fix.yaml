@@ -1,0 +1,47 @@
+version: '1.0'
+run:
+  run_name: smoke_layout_fix
+  seed: 920
+  repeat_policy: all_repeats
+inputs:
+  results_root: results
+  datasets:
+  - eicu
+  tasks:
+  - aki
+selection:
+  metric_for_best_model: aupr
+  feature_sets_canonical:
+  - sd
+  - sd_sum
+  - sd_traj
+  - sd_sum_traj
+  - sd_traj_boot
+  - sd_sum_traj_boot
+  multi_marker_preference: true
+  feature_set_aliases: {}
+statistics:
+  test: wilcoxon_paired
+  reference_feature_set: sd
+  pvalue_thresholds:
+    0.001: '***'
+    0.01: '**'
+    0.05: '*'
+plot:
+  formats:
+  - png
+  dpi: 200
+  anchors:
+  - '#CCD8E7'
+  - '#93540A'
+  - '#7A620E'
+  figsize_main:
+  - 15.0
+  - 6.5
+  figsize_best:
+  - 13.0
+  - 5.8
+outputs:
+  root: results/poster
+  write_tables: true
+  write_manifest: true

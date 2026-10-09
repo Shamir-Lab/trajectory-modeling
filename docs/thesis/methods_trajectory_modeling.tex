@@ -1,0 +1,206 @@
+% ---------------------------------------------------------------------------
+% Methods, Sections 2.1 and 2.2
+% Formal description of the Bayesian B-spline trajectory pipeline implemented in
+%   src/traj_features/backends/bayes/{sampling,classify,pipeline,model}.py
+%   src/traj_features/backends/bootstrap/{classify,pipeline,model}.py
+% Requires: amsmath, amssymb, booktabs.
+% Display equations use $$...$$ as requested; replace with \begin{equation}
+% environments if numbered cross-references are needed.
+% ---------------------------------------------------------------------------
+
+\section{Methods}
+\label{sec:methods}
+
+\subsection{Probabilistic Trajectory Representation}
+\label{sec:methods:representation}
+
+\subsubsection{Data model and notation}
+
+Let $\mathcal{P}=\{1,\dots,N\}$ index the intensive-care unit stays that constitute the analysis cohort, where $N$ denotes the number of stays retained after the inclusion criteria of Section~\ref{sec:cohort} are applied. Let $\mathcal{B}$ denote the set of monitored biomarkers; in the present work $\mathcal{B}$ comprises arterial lactate, heart rate and systolic arterial pressure. For a stay $i\in\mathcal{P}$ and a biomarker $b\in\mathcal{B}$, the raw observations form the irregularly sampled set
+$$\mathcal{S}_i^b=\{(t_{ij},y_{ij})\}_{j=1}^{n_i^b},$$
+in which $t_{ij}\in\mathbb{R}_{\ge0}$ is the elapsed time of the $j$-th measurement expressed in hours since admission, $y_{ij}\in\mathbb{R}$ is the measured value in native clinical units, and $n_i^b$ is the number of available measurements. The superscript $b$ is suppressed wherever a single biomarker is under discussion, since all biomarkers are processed independently and identically up to the choice of the threshold parameters of Section~\ref{sec:methods:classification}.
+
+Each measurement additionally carries a coarse alignment index $\theta_{ij}\in\mathbb{Z}_{\ge0}$, defined as the integer hour of the stay to which the measurement belongs. The index $\theta_{ij}$ serves two distinct roles that must be kept separate: it defines the temporal resolution at which trajectory features are emitted, whereas $t_{ij}$ retains the exact measurement time and is used as the regression abscissa. Let $\mathcal{A}_i=\{\theta_{ij}:1\le j\le n_i\}$ denote the set of distinct alignment indices available for stay $i$; its elements are referred to as anchor times.
+
+\subsubsection{Causal lookback windows}
+
+Let $W>0$ denote the lookback horizon, expressed in hours. For every anchor time $a\in\mathcal{A}_i$ the pipeline extracts the window
+$$\mathcal{W}_i(a)=\{(t_{ij},y_{ij})\in\mathcal{S}_i:a-W\le\theta_{ij}\le a\},$$
+whose cardinality is written $n_{ia}=|\mathcal{W}_i(a)|$. Let $n_{\min}\in\mathbb{N}$ denote the minimum number of observations required for a window to be admissible. The window $\mathcal{W}_i(a)$ is retained if and only if $n_{ia}\ge n_{\min}$; all other anchor times are discarded and receive no trajectory features. The window is right-closed at the anchor time, so that every quantity derived from $\mathcal{W}_i(a)$ is a function of information available at time $a$ alone. This construction is therefore causal by design and introduces no look-ahead leakage into the downstream prediction models.
+
+\subsubsection{Time normalization}
+\label{sec:methods:normalization}
+
+All subsequent modelling is carried out on a normalized time axis. Let $t_{ia}^-=\min\{t_{ij}:(t_{ij},y_{ij})\in\mathcal{W}_i(a)\}$ and $t_{ia}^+=\max\{t_{ij}:(t_{ij},y_{ij})\in\mathcal{W}_i(a)\}$ denote the earliest and latest measurement times inside the window. Let $\varepsilon=10^{-8}$ denote a numerical floor that guards against degenerate windows in which all measurements share a single timestamp, and define the effective window span
+$$\Delta_{ia}=\max\{\varepsilon,\,t_{ia}^+-t_{ia}^-\}.$$
+The normalized time of the $j$-th observation is then
+$$s_{ij}=\frac{t_{ij}-t_{ia}^-}{\Delta_{ia}}.$$
+This affine map sends $t_{ia}^-\mapsto0$ and $t_{ia}^+\mapsto1$; consequently the lookback window is mapped onto the closed unit interval $[0,1]$, and every window in every cohort is modelled on one common domain irrespective of its physical duration or sampling density. The normalization has three consequences that matter for the interpretation of the model. First, the spline knots and the prior of Section~\ref{sec:methods:prior} are specified once on $[0,1]$ and are thereby window-invariant and cohort-invariant. Second, the regression coefficients are dimensionless in time, so all slopes must be transformed back to native units before any clinical threshold is applied; this back-transformation is given in Section~\ref{sec:methods:grid}. Third, the map is anchored to the observed support of the window rather than to the nominal horizon $[a-W,a]$, so a sparse window whose measurements span less than $W$ hours is stretched to the full unit interval. The reported slopes remain correct in native units because $\Delta_{ia}$ is carried through the back-transformation, but the effective resolution of the fit degrades gracefully with the observed span rather than with the nominal horizon.
+
+The response is standardized within each window. Let $\hat{\mu}_{ia}$ denote the empirical mean and $\hat{\sigma}_{ia}$ the empirical standard deviation of the values in $\mathcal{W}_i(a)$, computed without the Bessel correction and replaced by unity whenever the observed values are constant. The standardized response is
+$$z_{ij}=\frac{y_{ij}-\hat{\mu}_{ia}}{\hat{\sigma}_{ia}}.$$
+
+\subsubsection{Cubic B-spline basis}
+\label{sec:methods:basis}
+
+The latent trajectory is expanded in a cubic B-spline basis of degree $p=3$ and order $p+1=4$. Let $d\in\mathbb{N}$ denote the requested number of basis degrees of freedom, a user-level hyperparameter of the pipeline. Because a window may contain as few as $n_{\min}$ observations, the requested value is clipped to an effective value
+$$d_{\mathrm{eff}}=\min\bigl\{d,\ \max\{4,\,n_{ia}-1\},\ 8\bigr\}.$$
+The inner clamp at $4$ guarantees that the basis is never smaller than the minimum required to represent a cubic polynomial, while the outer clamp at $8$ bounds the model complexity in densely sampled windows and thereby bounds the per-window sampling cost.
+
+Let $\kappa=d_{\mathrm{eff}}-4$ denote the number of interior knots implied by the effective degrees of freedom, with the convention that the basis includes its own intercept function. The interior knots are placed at the empirical quantiles of the normalized observation times at the equally spaced probability levels
+$$q_r=\frac{r}{\kappa+1},\qquad r=1,\dots,\kappa,$$
+and the boundary knots are fixed at $0$ and $1$, each repeated with multiplicity $p+1=4$. Knot placement is therefore data-adaptive in the sense that it follows the empirical distribution of measurement times within the window. Writing $B_1,\dots,B_{d_{\mathrm{eff}}}$ for the resulting basis functions, these are non-negative and form a partition of unity on $[0,1]$, so that $\sum_{m=1}^{d_{\mathrm{eff}}}B_m(s)=1$ for every $s\in[0,1]$.
+
+The design matrix additionally carries an explicit intercept column contributed by the formula interface, so that
+$$X\in\mathbb{R}^{n_{ia}\times(d_{\mathrm{eff}}+1)},\qquad X_{j1}=1,\qquad X_{j,m+1}=B_m(s_{ij}),\quad m=1,\dots,d_{\mathrm{eff}}.$$
+
+\paragraph{Remark on identifiability.} The partition-of-unity property implies that the first column of $X$ equals the sum of the remaining $d_{\mathrm{eff}}$ columns, so $\operatorname{rank}(X)=d_{\mathrm{eff}}$ and the linear predictor is invariant along the direction $v=(1,-1,\dots,-1)^{\top}\in\mathbb{R}^{d_{\mathrm{eff}}+1}$. The coefficient vector is therefore not likelihood-identified along $v$. Because the prior of Section~\ref{sec:methods:prior} is proper, the posterior remains proper and the fitted mean function $X\beta$, which is the only quantity propagated to the classification stage, is fully identified; the unidentified direction is governed by the prior alone and does not affect any reported feature.
+
+\subsubsection{Prior specification and posterior inference}
+\label{sec:methods:prior}
+
+Let $\beta\in\mathbb{R}^{d_{\mathrm{eff}}+1}$ denote the vector of basis coefficients and let $\sigma>0$ denote the residual scale on the standardized response. The window-level generative model is
+$$\beta\sim\mathcal{N}\bigl(0,\,I_{d_{\mathrm{eff}}+1}\bigr),\qquad\sigma\sim\mathcal{N}^{+}(0,1),\qquad z_{ij}\mid\beta,\sigma\stackrel{\text{iid}}{\sim}\mathcal{N}\bigl((X\beta)_j,\,\sigma^2\bigr),$$
+where $\mathcal{N}^{+}(0,1)$ denotes the half-normal distribution with unit scale, that is, the law of $|U|$ for $U\sim\mathcal{N}(0,1)$. The unit-variance Gaussian prior on $\beta$ is weakly informative on the standardized scale: since the response has unit empirical variance by construction and the basis is a partition of unity, a coefficient of magnitude one corresponds to a deviation of one within-window standard deviation, so the prior places negligible mass on trajectories that are implausible given the standardization.
+
+Let $C$ denote the number of Markov chains, $T$ the number of tuning iterations discarded from each chain, $D$ the number of retained draws per chain, and $\alpha\in(0,1)$ the target average acceptance probability of the step-size adaptation. The posterior is sampled with the No-U-Turn Sampler, and the retained posterior sample size is
+$$S=CD.$$
+The sampler backend is selected at runtime among a gradient-compiled Rust implementation, a JAX implementation and the reference implementation, with automatic fallback in the stated order; the three backends target the identical posterior and differ only in their computational realization. A fixed pseudo-random seed is used for every window, so the feature matrix is a deterministic function of the input data and the hyperparameters.
+
+\subsubsection{Evaluation grid and back-transformation}
+\label{sec:methods:grid}
+
+Posterior trajectories are evaluated on a uniform grid on the normalized domain. Let $f\in\mathbb{N}$ denote the grid density, expressed as the number of evaluation points per hour of observed window span. The number of grid points is
+$$n_g=\max\bigl\{3,\ f,\ \operatorname{round}(f\Delta_{ia})\bigr\},$$
+where the lower bound of three points is imposed because the nonlinearity statistic of Section~\ref{sec:methods:classification} requires at least two consecutive slope estimates. The normalized grid is
+$$u_k=\frac{k-1}{n_g-1},\qquad k=1,\dots,n_g,$$
+and $\tilde{X}\in\mathbb{R}^{n_g\times(d_{\mathrm{eff}}+1)}$ denotes the design matrix obtained by evaluating the basis specification of Section~\ref{sec:methods:basis} at the grid points.
+
+Let $\beta^{(s)}$ denote the $s$-th retained posterior draw, for $s=1,\dots,S$. The corresponding trajectory on the standardized scale is $\tilde{X}\beta^{(s)}$, and the two back-transformations return it to native units of value and of time,
+$$\hat{y}^{(s)}_k=\hat{\sigma}_{ia}\bigl(\tilde{X}\beta^{(s)}\bigr)_k+\hat{\mu}_{ia},\qquad g_k=t_{ia}^-+u_k\Delta_{ia}.$$
+The collection $\{\hat{y}^{(s)}\}_{s=1}^{S}\subset\mathbb{R}^{n_g}$ constitutes $S$ posterior draws of the latent mean trajectory evaluated at the native-unit times $g_1,\dots,g_{n_g}$. These are draws of the conditional mean function and not posterior predictive draws: the residual scale $\sigma$ is marginalized out but observation noise is not re-injected, so the classification of Section~\ref{sec:methods:classification} acts on smooth trajectories and the reported probabilities quantify uncertainty about the underlying trend rather than about a future single measurement.
+
+\paragraph{Remark on the prediction basis.} The grid design matrix $\tilde{X}$ is constructed by re-evaluating the basis specification on the uniform grid, so its interior knots are the empirical quantiles of $\{u_k\}$ rather than of $\{s_{ij}\}$. The prediction basis therefore coincides with the fitting basis when $\kappa=0$, that is when $d_{\mathrm{eff}}=4$, and otherwise coincides only to the extent that the observed normalized times are close to uniformly distributed on $[0,1]$. For the configuration used here, in which $d=5$ and hence $\kappa=1$ whenever the window contains at least six observations, the fitted interior knot is the median normalized observation time while the prediction interior knot is fixed at $1/2$. The discrepancy is a small basis misspecification at prediction time and vanishes for regularly sampled windows, which is the dominant regime for the monitored vital signs.
+
+\subsubsection{Failure handling and induced missingness}
+
+Sampling is executed per window inside a parallel worker pool. A window whose posterior sampling raises an exception under all backends yields no probability record and the corresponding anchor time is emitted with missing feature values rather than being silently dropped. A batch of windows that exceeds a wall-clock limit is likewise recorded as missing in its entirety. This mechanism bounds the cost of pathological windows but induces a missingness pattern that is not guaranteed to be independent of the trajectory shape, since degenerate or extremely ill-conditioned windows are precisely those most likely to fail. The proportion of affected anchor times is reported in Section~\ref{sec:results} and the downstream models treat these entries under the missingness policy stated in Section~\ref{sec:methods:prediction}.
+
+\subsection{Deterministic Trajectory-Type Assignment}
+\label{sec:methods:classification}
+
+Each posterior trajectory is mapped to a set of binary trajectory-type indicators by a deterministic rule. Because the rule is applied independently to every posterior draw, the empirical frequency of each indicator across draws is a Monte Carlo estimate of the posterior probability of the corresponding type, which is the quantity used as a covariate in the prediction models.
+
+\subsubsection{Discrete slope field}
+
+Let $K=n_g-1$ denote the number of consecutive intervals of the evaluation grid. Since the grid is uniform in normalized time, the grid spacing in native units is $\delta_{ia}=\Delta_{ia}/(n_g-1)$, identical for all intervals. The slope field of the $s$-th posterior trajectory is
+$$m^{(s)}_k=\frac{\hat{y}^{(s)}_{k+1}-\hat{y}^{(s)}_k}{g_{k+1}-g_k}=\frac{\hat{y}^{(s)}_{k+1}-\hat{y}^{(s)}_k}{\delta_{ia}},\qquad k=1,\dots,K.$$
+Each $m^{(s)}_k$ carries the units of the biomarker per hour, which is the scale on which the clinical thresholds below are specified. The empirical mean slope of a draw is written
+$$\bar{m}^{(s)}=\frac{1}{K}\sum_{k=1}^{K}m^{(s)}_k.$$
+
+\subsubsection{Threshold parameters}
+
+Three real-valued thresholds govern the assignment. Let $\tau_{\mathrm{flat}}$ denote the tolerance applied to the mean slope of a trajectory, so that a trajectory is admissible as non-progressing only if its average rate of change does not exceed $\tau_{\mathrm{flat}}$ in the deteriorating direction. Let $\tau_{\mathrm{dec}}$ denote the per-interval change threshold, which separates intervals of clinically meaningful change from intervals of clinical stability. Let $\gamma>0$ denote the nonlinearity gap, which is the minimum separation between the slow and fast halves of the slope distribution required to declare a trajectory nonlinear. Finally, let $\rho$ denote the quorum fraction, that is, the proportion of grid intervals that must satisfy a per-interval criterion before the corresponding trajectory-level indicator is set. The quorum is fixed at $\rho=0.8$ throughout the implementation and is not exposed as a tunable hyperparameter.
+
+\subsubsection{Rule for deteriorating-decreasing biomarkers}
+
+This rule applies to biomarkers for which clinical deterioration corresponds to a decreasing value, such as systolic arterial pressure; the thresholds $\tau_{\mathrm{flat}}$ and $\tau_{\mathrm{dec}}$ are then negative. Define the interval fractions
+$$\pi^{(s)}_{\mathrm{flat}}=\frac{1}{K}\sum_{k=1}^{K}\mathbb{1}\bigl[m^{(s)}_k\ge\tau_{\mathrm{dec}}\bigr],\qquad\pi^{(s)}_{\mathrm{dec}}=\frac{1}{K}\sum_{k=1}^{K}\mathbb{1}\bigl[m^{(s)}_k<\tau_{\mathrm{dec}}\bigr],$$
+where $\mathbb{1}[\cdot]$ denotes the indicator function. The stability and monotone-decline indicators are
+$$F^{(s)}_{\mathrm{stable}}=\mathbb{1}\bigl[\pi^{(s)}_{\mathrm{flat}}\ge\rho\bigr]\cdot\mathbb{1}\bigl[\bar{m}^{(s)}\ge\tau_{\mathrm{flat}}\bigr],\qquad F^{(s)}_{\mathrm{linear}}=\mathbb{1}\bigl[\pi^{(s)}_{\mathrm{dec}}\ge\rho\bigr].$$
+The stability indicator therefore conjoins a local criterion, namely that at least a fraction $\rho$ of the intervals avoid steep decline, with a global criterion on the average rate of change; a trajectory that is locally flat but drifts consistently downwards fails the second criterion and is not labelled stable.
+
+\paragraph{Remark on exclusivity.} The two interval fractions are complementary, $\pi^{(s)}_{\mathrm{flat}}+\pi^{(s)}_{\mathrm{dec}}=1$, so the conditions $\pi^{(s)}_{\mathrm{flat}}\ge\rho$ and $\pi^{(s)}_{\mathrm{dec}}\ge\rho$ can hold simultaneously only if $\rho\le1/2$. At the implemented value $\rho=0.8$ the stability and monotone-decline indicators are mutually exclusive by construction, and no draw can be counted towards both.
+
+\subsubsection{Rule for deteriorating-increasing biomarkers}
+
+This rule applies to biomarkers for which deterioration corresponds to an increasing value, such as arterial lactate and heart rate; the thresholds are then positive and the inequalities are mirrored. The interval fractions become
+$$\pi^{(s)}_{\mathrm{flat}}=\frac{1}{K}\sum_{k=1}^{K}\mathbb{1}\bigl[m^{(s)}_k\le\tau_{\mathrm{dec}}\bigr],\qquad\pi^{(s)}_{\mathrm{inc}}=\frac{1}{K}\sum_{k=1}^{K}\mathbb{1}\bigl[m^{(s)}_k>\tau_{\mathrm{dec}}\bigr],$$
+and the indicators are
+$$F^{(s)}_{\mathrm{stable}}=\mathbb{1}\bigl[\pi^{(s)}_{\mathrm{flat}}\ge\rho\bigr]\cdot\mathbb{1}\bigl[\bar{m}^{(s)}\le\tau_{\mathrm{flat}}\bigr],\qquad F^{(s)}_{\mathrm{linear}}=\mathbb{1}\bigl[\pi^{(s)}_{\mathrm{inc}}\ge\rho\bigr].$$
+The two rules are exact reflections of one another under the substitution $m\mapsto-m$, $\tau\mapsto-\tau$, so a single implementation semantics covers both signs of clinical deterioration and only the sign convention of the thresholds distinguishes them.
+
+\subsubsection{Nonlinearity statistic}
+
+The third indicator is computed from the order statistics of the slope field. Let $m^{(s)}_{(1)}\le m^{(s)}_{(2)}\le\dots\le m^{(s)}_{(K)}$ denote the slopes of draw $s$ sorted in ascending order, and let $h=\lfloor K/2\rfloor$ denote the size of the lower half of that ordering. Define the two half-sample means
+$$\bar{m}^{(s)}_{\mathrm{low}}=\frac{1}{h}\sum_{k=1}^{h}m^{(s)}_{(k)},\qquad\bar{m}^{(s)}_{\mathrm{high}}=\frac{1}{K-h}\sum_{k=h+1}^{K}m^{(s)}_{(k)}.$$
+The nonlinearity indicator is
+$$F^{(s)}_{\mathrm{nonlinear}}=\mathbb{1}\bigl[\,\bigl|\bar{m}^{(s)}_{\mathrm{high}}-\bar{m}^{(s)}_{\mathrm{low}}\bigr|>\gamma\,\bigr].$$
+For the decreasing-direction rule the lower half collects the steepest declines and the upper half the slowest ones, and for the increasing-direction rule the roles are exchanged; the absolute value renders the statistic symmetric, so the two conventions yield identical values. The requirement $h\ge1$ is equivalent to $K\ge2$ and hence to $n_g\ge3$, which the grid construction of Section~\ref{sec:methods:grid} enforces unconditionally.
+
+\paragraph{Remark on interpretation.} The statistic is a contrast between the two halves of the empirical slope distribution and is invariant to any permutation of the grid intervals. It therefore measures heterogeneity in the magnitude of the rate of change and not curvature in the differential-geometric sense: an accelerating monotone trajectory, a decelerating one and an oscillating one with the same slope distribution receive the same value. This is a deliberate design choice, since the clinical target is the detection of a change in the rate of deterioration rather than the identification of its temporal location, but it should be borne in mind when the nonlinear class is interpreted substantively.
+
+\subsubsection{A four-region variant}
+
+The implementation additionally provides a variant intended for ordinal cognitive scores, in which a further threshold $\tau_{\mathrm{age}}$ separates change attributable to normal ageing from pathological change. The slope axis is partitioned into four regions by $\tau_{\mathrm{age}}$ and $\tau_{\mathrm{dec}}$, the stability indicator uses $\tau_{\mathrm{age}}$ in place of $\tau_{\mathrm{dec}}$ in its local criterion, and the linear indicator is the disjunction of the quorum conditions on the slow-change and fast-change regions. This variant is retained in the codebase for continuity with earlier work and is not used in any of the intensive-care experiments reported in this thesis.
+
+\subsubsection{Posterior trajectory-type probabilities}
+
+Let $\mathcal{C}=\{\mathrm{stable},\mathrm{linear},\mathrm{nonlinear}\}$ denote the set of trajectory types, whose members are renamed per biomarker to reflect the direction of deterioration. For each admissible window the trajectory-type probability of type $c\in\mathcal{C}$ is the Monte Carlo average
+$$\hat{p}^{\,c}_{ia}=\frac{1}{S}\sum_{s=1}^{S}F^{(s)}_c,$$
+which is a consistent estimator of the posterior probability $\Pr\bigl[F_c=1\mid\mathcal{W}_i(a)\bigr]$ under the model of Section~\ref{sec:methods:prior}. Let $S_{\mathrm{eff}}$ denote the effective sample size of the corresponding indicator sequence, which accounts for the autocorrelation of the Markov chains; the Monte Carlo standard error of $\hat{p}^{\,c}_{ia}$ is then approximately $\bigl(\hat{p}^{\,c}_{ia}(1-\hat{p}^{\,c}_{ia})/S_{\mathrm{eff}}\bigr)^{1/2}$, and it is bounded above by $(4S_{\mathrm{eff}})^{-1/2}$.
+
+\paragraph{Remark on normalization.} The three indicators are separate functionals of the same trajectory and do not define a partition of the trajectory space, so in general $\sum_{c\in\mathcal{C}}\hat{p}^{\,c}_{ia}\ne1$. The stability and linear probabilities are mutually exclusive at $\rho=0.8$ as established above, whereas the nonlinearity indicator may co-occur with either. The three probabilities must therefore be read as marginal posterior probabilities of three overlapping events and not as a categorical distribution over trajectory shapes.
+
+The trajectory feature vector emitted for stay $i$ at anchor time $a$ and biomarker $b$ is
+$$\phi^b_{ia}=\bigl(\hat{p}^{\,\mathrm{stable}}_{ia},\ \hat{p}^{\,\mathrm{linear}}_{ia},\ \hat{p}^{\,\mathrm{nonlinear}}_{ia}\bigr)^{\top}\in[0,1]^3,$$
+and the concatenation of $\phi^b_{ia}$ over the three biomarkers yields the time-varying covariate $\phi_{ia}\in[0,1]^{9}$ that enters the prediction models of Section~\ref{sec:methods:prediction} at each patient-hour.
+
+\subsubsection{Nonparametric bootstrap alternative}
+\label{sec:methods:bootstrap}
+
+A resampling-based approximation to the same feature map is provided as a computationally cheaper alternative and is used for the sensitivity analyses of Section~\ref{sec:results}. Let $R$ denote the number of bootstrap replicates. For each replicate the indices $1,\dots,n_{ia}$ are resampled uniformly with replacement, the resampled pairs are sorted by time, values sharing a timestamp are averaged so that the abscissa is strictly increasing, and the replicate is discarded if fewer than four distinct times remain. Let $n_u$ denote the number of distinct times in the replicate. A smoothing spline of degree $k=\min\{3,n_u-1\}$ is fitted by the Dierckx algorithm, which selects the smallest number of knots subject to the smoothing constraint
+$$\sum_{j=1}^{n_u}\bigl(y_j-\hat{f}(t_j)\bigr)^2\le\lambda,$$
+where $\hat{f}$ denotes the fitted spline and $\lambda$ denotes the smoothing budget, set by default to $\lambda=n_u$. The fitted spline is evaluated on a uniform grid of $f$ points spanning the observed window in native units, and the slope-based rules above are applied unchanged.
+
+Two differences from the Bayesian backend must be stated explicitly. First, the bootstrap backend applies neither the time normalization of Section~\ref{sec:methods:normalization} nor the response standardization, since the smoothing spline is fitted directly in native units. Second, each replicate is reduced to a single label by the priority ordering nonlinear, then linear, then stable, so the resulting probabilities are relative frequencies of a categorical variable and do sum to one. The bootstrap probabilities and the Bayesian probabilities are consequently not on the same scale and are never pooled; the bootstrap results are reported only as a robustness check on the ranking of trajectory types.
+
+\subsection{Hyperparameter Settings}
+\label{sec:methods:hyperparameters}
+
+Table~\ref{tab:traj-hyperparams} lists the values of the structural hyperparameters used for the three cohorts, and Table~\ref{tab:traj-thresholds} lists the biomarker-specific thresholds. All thresholds are expressed in native biomarker units per hour, and their signs follow the direction of clinical deterioration as described above.
+
+\begin{table}[t]
+\centering
+\caption{Structural hyperparameters of the trajectory pipeline.}
+\label{tab:traj-hyperparams}
+\begin{tabular}{llccc}
+\toprule
+Symbol & Meaning & HiRID & MIMIC-IV & eICU \\
+\midrule
+$W$ & lookback horizon in hours & $12$ & $12$ & $12$ \\
+$n_{\min}$ & minimum observations per window & $4$ & $4$ & $4$ \\
+$d$ & requested spline degrees of freedom & $5$ & $5$ & $5$ \\
+$f$ & evaluation points per hour & $3$ & $2$ & $2$ \\
+$C$ & Markov chains & $4$ & $4$ & $4$ \\
+$T$ & tuning iterations per chain & $300$ & $300$ & $300$ \\
+$D$ & retained draws per chain & $300$ & $200$ & $200$ \\
+$S$ & total posterior draws & $1200$ & $800$ & $800$ \\
+$\alpha$ & target acceptance probability & $0.995$ & $0.99$ & $0.99$ \\
+$\rho$ & quorum fraction & $0.8$ & $0.8$ & $0.8$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\caption{Biomarker-specific classification thresholds in native units per hour.}
+\label{tab:traj-thresholds}
+\begin{tabular}{lllrrr}
+\toprule
+Cohort & Biomarker & Deterioration & $\tau_{\mathrm{flat}}$ & $\tau_{\mathrm{dec}}$ & $\gamma$ \\
+\midrule
+HiRID & lactate & increasing & $0.03$ & $0.12$ & $0.18$ \\
+HiRID & heart rate & increasing & $1.2$ & $4.5$ & $7.0$ \\
+HiRID & systolic pressure & decreasing & $-1.2$ & $-4.5$ & $7.0$ \\
+\midrule
+MIMIC-IV & lactate & increasing & $0.04$ & $0.15$ & $0.2$ \\
+MIMIC-IV & heart rate & increasing & $1.5$ & $6.0$ & $10.0$ \\
+MIMIC-IV & systolic pressure & decreasing & $-1.5$ & $-6.0$ & $8.0$ \\
+\midrule
+eICU & lactate & increasing & $0.04$ & $0.15$ & $0.2$ \\
+eICU & heart rate & increasing & $1.5$ & $6.0$ & $10.0$ \\
+eICU & systolic pressure & decreasing & $-1.5$ & $-6.0$ & $8.0$ \\
+\bottomrule
+\end{tabular}
+\end{table}

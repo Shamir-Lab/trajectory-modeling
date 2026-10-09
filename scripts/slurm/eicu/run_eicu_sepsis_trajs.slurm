@@ -23,7 +23,7 @@ mkdir -p "$LOG_ROOT/outs" "$LOG_ROOT/errs"
 cd "$REPO_ROOT" || exit 1
 
 # Activate conda environment
-source /home/gaga/tamarw1/anaconda3/etc/profile.d/conda.sh
+source "${CONDA_SH:-/home/gaga/tamarw1/anaconda3/etc/profile.d/conda.sh}"
 conda activate pymc_env
 
 # Cohort splitting
@@ -33,7 +33,7 @@ COHORT_INDEX=${SLURM_ARRAY_TASK_ID}
 echo "Starting eICU SEPSIS TRAJS run at $(date)"
 echo ""
 
-python "$REPO_ROOT/scripts/traj_scripts/eicu/sepsis_all_biomarkers.py" \
+python "$REPO_ROOT/scripts/trajectory/eicu/sepsis_all_biomarkers.py" \
     --data-dir "$DATA_ROOT/eicu/sepsis" \
     --pred-dataset "$DATA_ROOT/eicu/sepsis/sepsis_prediction_dataset.csv" \
     --output "$DATA_ROOT/eicu/sepsis/sepsis_trajectory_probs.csv" \
@@ -46,6 +46,11 @@ EXIT_CODE=$?
 
 echo ""
 echo "eICU SEPSIS TRAJS run completed at $(date) with exit code $EXIT_CODE"
+
+# Attempt to clean PyTensor cache for this job (best-effort)
+if [ -f "$REPO_ROOT/scripts/slurm/cleanup_pytensor_cache.sh" ]; then
+    bash "$REPO_ROOT/scripts/slurm/cleanup_pytensor_cache.sh" || true
+fi
 
 # Exit with the same code as the Python script
 exit $EXIT_CODE

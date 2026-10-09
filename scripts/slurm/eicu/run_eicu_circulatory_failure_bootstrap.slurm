@@ -10,7 +10,7 @@
 #SBATCH --array=0-7
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="${REPO_ROOT:-$SCRIPT_DIR}"
+REPO_ROOT="${REPO_ROOT:-${SLURM_SUBMIT_DIR:-$SCRIPT_DIR}}"
 while [[ ! -f "$REPO_ROOT/pyproject.toml" && "$REPO_ROOT" != "/" ]]; do
     REPO_ROOT="$(dirname "$REPO_ROOT")"
 done
@@ -22,7 +22,7 @@ mkdir -p "$LOG_ROOT/outs" "$LOG_ROOT/errs"
 cd "$REPO_ROOT" || exit 1
 
 # Activate conda environment
-source /home/gaga/tamarw1/anaconda3/etc/profile.d/conda.sh
+source "${CONDA_SH:-/home/gaga/tamarw1/anaconda3/etc/profile.d/conda.sh}"
 conda activate pymc_env
 
 echo "========================================================================"
@@ -35,7 +35,7 @@ echo "========================================================================"
 COHORT_SPLITS=8
 COHORT_INDEX=${SLURM_ARRAY_TASK_ID}
 
-action_script="$REPO_ROOT/scripts/traj_scripts/eicu/circulatory_failure_trajs_bootstrap.py"
+action_script="$REPO_ROOT/scripts/trajectory/eicu/circulatory_failure_trajs_bootstrap.py"
 
 echo "Running: $action_script"
 echo "Cohort: ${COHORT_INDEX}/${COHORT_SPLITS}"

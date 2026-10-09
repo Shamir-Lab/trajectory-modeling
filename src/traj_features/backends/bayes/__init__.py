@@ -9,13 +9,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-	from .model import BayesianTrajPS, BayesConfig
+	from .model import BayesianTraj, BayesConfig
 
-__all__ = ["BayesianTrajPS", "BayesConfig"]
+__all__ = ["BayesianTraj", "BayesConfig", "BayesianTrajPS"]
 
 
 def __getattr__(name: str):
-	if name in {"BayesianTrajPS", "BayesConfig"}:
-		from .model import BayesianTrajPS, BayesConfig
-		return {"BayesianTrajPS": BayesianTrajPS, "BayesConfig": BayesConfig}[name]
+	if name in {"BayesianTraj", "BayesianTrajPS", "BayesConfig"}:
+		from .model import BayesianTraj, BayesianTrajPS, BayesConfig
+		return {"BayesianTraj": BayesianTraj, "BayesianTrajPS": BayesianTrajPS, "BayesConfig": BayesConfig}[name]
 	raise AttributeError(name)

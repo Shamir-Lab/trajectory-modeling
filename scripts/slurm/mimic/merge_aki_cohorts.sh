@@ -47,7 +47,30 @@ def merge_cohorts(pattern: str, output_name: str, id_col: str):
     print(f"  Total patients: {merged[id_col].nunique():,}")
 
 merge_cohorts("aki_trajectory_probs_bayes_cohort*.csv", "aki_trajectory_probs_bayes.csv", "hadm_id")
-merge_cohorts("aki_prediction_dataset_with_probs_cohort*.csv", "aki_prediction_dataset_with_probs.csv", "hadm_id")
+
+# Build aki_prediction_dataset_with_probs.csv by merging the concatenated
+# trajectory probs with the base prediction dataset. Per-cohort merged files
+# are never written by the SLURM job, so we do it here from the full probs.
+probs_path = result_dir / "aki_trajectory_probs_bayes.csv"
+pred_path = result_dir / "aki_prediction_dataset.csv"
+if not probs_path.exists():
+    print("ERROR: aki_trajectory_probs_bayes.csv not found — run merge_cohorts first")
+elif not pred_path.exists():
+    print(f"ERROR: {pred_path} not found")
+else:
+    print(f"\nBuilding aki_prediction_dataset_with_probs.csv...")
+    prob_cols = ["prob_stable", "prob_gradual_increase", "prob_rapid_increase"]
+    probs = pd.read_csv(probs_path, usecols=["hadm_id", "time_day"] + prob_cols)
+    pred = pd.read_csv(pred_path)
+    merged = pred.merge(probs[["hadm_id", "time_day"] + prob_cols].drop_duplicates(["hadm_id", "time_day"]),
+                        on=["hadm_id", "time_day"], how="left")
+    missing = merged[prob_cols].isna().any(axis=1).sum()
+    if missing > 0:
+        print(f"  WARNING: {missing:,} rows ({100*missing/len(merged):.1f}%) have missing probs")
+    out = result_dir / "aki_prediction_dataset_with_probs.csv"
+    merged.to_csv(out, index=False)
+    print(f"✓ Saved: {out}")
+    print(f"  Rows: {len(merged):,}, patients: {merged['hadm_id'].nunique():,}")
 EOF
 
 echo ""

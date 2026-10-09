@@ -13,6 +13,7 @@ OOF_K=${OOF_K:-10}
 PLOT_K=${PLOT_K:-10}
 SAVE_OOF=${SAVE_OOF:-0}
 WITH_PROBS_SOURCE=${WITH_PROBS_SOURCE:-default}
+RECOMPUTE_BOOTSTRAP_TRAJ=${RECOMPUTE_BOOTSTRAP_TRAJ:-0}
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -45,6 +46,10 @@ while [[ $# -gt 0 ]]; do
             WITH_PROBS_SOURCE="$2"
             shift 2
             ;;
+        --recompute-bootstrap-trajectories)
+            RECOMPUTE_BOOTSTRAP_TRAJ=1
+            shift
+            ;;
         --save-oof)
             SAVE_OOF=1
             shift
@@ -66,6 +71,11 @@ else
     OOF_FLAG="--no-save-oof"
 fi
 
+BOOTSTRAP_FLAG=""
+if [[ "$RECOMPUTE_BOOTSTRAP_TRAJ" == "1" ]]; then
+    BOOTSTRAP_FLAG="--recompute-bootstrap-trajectories"
+fi
+
 cd "$REPO_ROOT" || exit 1
 
 mkdir -p logs/outs/eicu logs/errs/eicu
@@ -78,7 +88,7 @@ tmux new-session -d -s "$SESSION_NAME" -x 200 -y 50
 
 # Send command
 tmux send-keys -t "$SESSION_NAME" \
-    "cd $REPO_ROOT && python scripts/analysis/eicu/eicu_sepsis_analysis.py --train-n-jobs $TRAIN_N_JOBS --train-backend $TRAIN_BACKEND --parallel-axis $PARALLEL_AXIS --plot-k $PLOT_K --with-probs-source $WITH_PROBS_SOURCE --oof-scope $OOF_SCOPE --oof-k $OOF_K $OOF_FLAG > logs/outs/eicu/eicu_sepsis_analysis.out 2> logs/errs/eicu/eicu_sepsis_analysis.err" \
+    "cd $REPO_ROOT && python scripts/analysis/eicu/eicu_sepsis_analysis.py --train-n-jobs $TRAIN_N_JOBS --train-backend $TRAIN_BACKEND --parallel-axis $PARALLEL_AXIS --plot-k $PLOT_K --with-probs-source $WITH_PROBS_SOURCE $BOOTSTRAP_FLAG --oof-scope $OOF_SCOPE --oof-k $OOF_K $OOF_FLAG > logs/outs/eicu/eicu_sepsis_analysis.out 2> logs/errs/eicu/eicu_sepsis_analysis.err" \
     Enter
 
 echo "✓ tmux session created: $SESSION_NAME"
@@ -89,6 +99,7 @@ echo "  OOF Scope: $OOF_SCOPE"
 echo "  OOF K: $OOF_K"
 echo "  Plot K: $PLOT_K"
 echo "  With Probs Source: $WITH_PROBS_SOURCE"
+echo "  Recompute Bootstrap Trajectories: $RECOMPUTE_BOOTSTRAP_TRAJ"
 echo "  Save OOF: $SAVE_OOF"
 echo "  Output log: logs/outs/eicu/eicu_sepsis_analysis.out"
 echo "  Error log: logs/errs/eicu/eicu_sepsis_analysis.err"

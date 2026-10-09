@@ -159,20 +159,20 @@ def impute_features(df, hadm_col='hadm_id', traj_cols=None, vital_cols=None, lab
     if traj_cols is not None:
         for col in traj_cols:
             if col in df.columns:
-                df[col] = df.groupby(level=0)[col].fillna(method='ffill', limit=2)
+                df[col] = df.groupby(level=0)[col].ffill(limit=2)
                 df[col] = df[col].fillna(0)
-    
+
     # Vitals: ffill limit=3
     if vital_cols is not None:
         for col in vital_cols:
             if col in df.columns:
-                df[col] = df.groupby(level=0)[col].fillna(method='ffill', limit=3)
-    
+                df[col] = df.groupby(level=0)[col].ffill(limit=3)
+
     # Labs: ffill limit=3
     if lab_cols is not None:
         for col in lab_cols:
             if col in df.columns:
-                df[col] = df.groupby(level=0)[col].fillna(method='ffill', limit=3)
+                df[col] = df.groupby(level=0)[col].ffill(limit=3)
     
     return df
 

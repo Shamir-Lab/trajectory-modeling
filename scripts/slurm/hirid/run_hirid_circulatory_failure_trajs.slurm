@@ -6,9 +6,7 @@
 #SBATCH --cpus-per-task=64
 #SBATCH --mem=128G
 #SBATCH --time=12:00:00
-#SBATCH --gres=gpu:1
-#SBATCH --account=gpu-research
-#SBATCH --partition=gpu-shamir
+#SBATCH --partition=cpu-killable
 #SBATCH --array=0-9
 
 # HiRiD Circulatory Failure Trajectory Computation (multi-biomarker)
@@ -35,17 +33,33 @@ done
 [[ -f "$REPO_ROOT/pyproject.toml" ]] || { echo "Could not locate repo root"; exit 1; }
 
 DATA_ROOT="${DATA_ROOT:-/home/gaga/data/physionet}"
+export TRAJ_CACHE_ROOT="${TRAJ_CACHE_ROOT:-/home/gaga/tamarw1}"
 LOG_ROOT="${LOG_ROOT:-$REPO_ROOT/logs}"
 mkdir -p "$LOG_ROOT/outs" "$LOG_ROOT/errs"
+
+JOB_TMP="${TRAJ_CACHE_ROOT}/.job_tmp/hirid_cf/${SLURM_JOB_ID:-local}"
+mkdir -p "$JOB_TMP"
+export TMPDIR="$JOB_TMP"
+export NUMBA_DISABLE_CACHING=1
+export PYTHONPYCACHEPREFIX="${HOME}/.pycache_slurm/${SLURM_JOB_ID:-local}"
+mkdir -p "$PYTHONPYCACHEPREFIX"
+
+PYTENSOR_CACHE_ROOT="${HOME}/.pytensor_cache/${SLURM_JOB_ID:-local}"
+find "${HOME}/.pytensor_cache" -maxdepth 1 -mindepth 1 -type d -mtime +1 -exec rm -rf {} + 2>/dev/null || true
+mkdir -p "$PYTENSOR_CACHE_ROOT"
+export PYTENSOR_FLAGS="base_compiledir=${PYTENSOR_CACHE_ROOT},optimizer=fast_compile,exception_verbosity=high"
+
+trap 'bash "${REPO_ROOT}/scripts/slurm/cleanup_pytensor_cache.sh" 2>/dev/null || true; rm -rf "${JOB_TMP}" 2>/dev/null || true' EXIT
+
 cd "$REPO_ROOT" || exit 1
 
 # Run trajectory computation for all three biomarkers
-python "$REPO_ROOT/scripts/traj_scripts/hirid/hirid_circulatory_failure_trajs.py" \
+python "$REPO_ROOT/scripts/trajectory/hirid/circulatory_failure_trajs.py" \
     --input-dir "$DATA_ROOT/hirid/circulatory_failure" \
     --output-dir "$DATA_ROOT/hirid/circulatory_failure" \
     --window-hours 12.0 \
     --n-batches 10 \
-    --sampler pymc \
+    --sampler nutpie \
     --cohort-splits ${COHORT_SPLITS} \
     --cohort-index ${COHORT_INDEX}
 

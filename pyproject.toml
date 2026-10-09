@@ -4,20 +4,20 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "traj_features"
-version = "0.2.0"
+version = "0.3.0"
 description = "Trajectory Features: Extract temporal biomarker trajectories for prediction tasks (Bayesian MCMC, Bootstrap)"
 authors = [{ name = "Tammy Wertheimer" }]
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-  "numpy>=1.22,<2.0",
+  "numpy>=2.0",
   "pandas>=1.5",
   "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
 bayes = [
-  "pymc>=5.10",        # Bayesian MCMC trajectory sampling
+  "pymc>=5.10",        # Bayesian MCMC trajectory sampling (g++-accelerated via PyTensor)
   "arviz>=0.15",
   "pytensor>=2.18",
   "patsy>=0.5.3",
@@ -32,11 +32,15 @@ evaluation = [
   "matplotlib>=3.6",
   "seaborn>=0.12",
 ]
-legacy = [
-  "lifelines>=0.27",   # Cox models (legacy PS functionality)
-]
 
 all = ["traj_features[bayes,bootstrap,evaluation]"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow, involves MCMC sampling (deselect with '-m not slow')",
+    "gpu: marks tests that require a GPU node with JAX/numpyro installed",
+]
+testpaths = ["tests"]

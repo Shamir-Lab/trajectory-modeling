@@ -10,7 +10,7 @@ Mirrors MIMIC liver preprocessing:
 6. Define ACLF (Acute-on-Chronic Liver Failure) outcome (gap=0.5d, window=4d)
    - Bilirubin ≥12 mg/dL OR mortality
 7. Forward-fill imputation
-8. Drop >20% missing columns
+8. Drop >70% missing columns
 9. First positive event only per patient
 10. Save prediction dataset
 
@@ -24,15 +24,16 @@ sys.path.insert(0, os.path.abspath('src'))
 
 import pandas as pd
 import numpy as np
-from eicu_loader import EICULoader
+from eicu_loader import EICULoader, ffill_within_stay, MIN_TARGET_MEASUREMENTS, MISSINGNESS_THRESHOLD
 from tqdm import tqdm
 
 # Configuration
 PREDICTION_GAP_DAYS = 1.0      # Don't predict events within 1 day
 PREDICTION_WINDOW_DAYS = 5.0   # Predict ACLF within 5 days after gap
 LOOKBACK_DAYS = 5.0            # Use 5 days of historical data for features
-MIN_BILI_MEASUREMENTS = 3      # Minimum bilirubin measurements required
-OUTPUT_PATH = '/home/gaga/data/physionet/eicu/liver/liver_prediction_dataset.csv'
+MIN_BILI_MEASUREMENTS = MIN_TARGET_MEASUREMENTS  # Minimum measurements of the target clinical parameter
+_TRAJ_DATA_ROOT = os.environ.get("TRAJ_DATA_ROOT", "/home/gaga/data/physionet")
+OUTPUT_PATH = os.path.join(_TRAJ_DATA_ROOT, "eicu", "liver", "liver_prediction_dataset.csv")
 
 MAX_PATIENTS = None            # No limit for liver cohort (only ~1,146 patients)
 
@@ -232,12 +233,12 @@ else:
 # Forward-fill imputation within each patient
 print("\n[6/10] Forward-fill imputation...")
 daily_features = daily_features.sort_values(['stay_id', 'time_day'])
-daily_features = daily_features.set_index('stay_id').groupby(level=0).fillna(method='ffill').reset_index()
+daily_features = ffill_within_stay(daily_features, 'stay_id')
 
-# Drop columns with >20% missing
-print("\n[7/10] Dropping columns with >20% missing...")
+# Drop columns with >70% missing
+print("\n[7/10] Dropping columns with >70% missing...")
 missing_pct = daily_features.isnull().mean()
-cols_to_drop = missing_pct[missing_pct > 0.2].index.tolist()
+cols_to_drop = missing_pct[missing_pct > MISSINGNESS_THRESHOLD].index.tolist()
 if 'stay_id' in cols_to_drop:
     cols_to_drop.remove('stay_id')
 if 'time_day' in cols_to_drop:
@@ -328,7 +329,7 @@ final_stay_ids = prediction_dataset['stay_id'].unique()
 bilirubin_ts_filtered = bilirubin_ts[bilirubin_ts['stay_id'].isin(final_stay_ids)].copy()
 # Add time_day column (integer day for windowing in trajectory computation)
 bilirubin_ts_filtered['time_day'] = bilirubin_ts_filtered['time_days'].astype(int)
-bilirubin_ts_output = '/home/gaga/data/physionet/eicu/liver/bilirubin_timeseries.csv'
+bilirubin_ts_output = os.path.join(_TRAJ_DATA_ROOT, "eicu", "liver", "bilirubin_timeseries.csv")
 os.makedirs(os.path.dirname(bilirubin_ts_output), exist_ok=True)
 bilirubin_ts_filtered.to_csv(bilirubin_ts_output, index=False)
 print(f"  ✓ Saved raw time series: {len(bilirubin_ts_filtered):,} measurements for {len(final_stay_ids):,} patients")

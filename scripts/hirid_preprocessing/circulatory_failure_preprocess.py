@@ -5,8 +5,8 @@ Creates:
 - Lactate, Heart Rate, and Systolic BP time series
 - Prediction dataset with circulatory failure outcome
 
-Outcome definition (default):
-- Future window contains vasopressor start OR hypotension (SBP below threshold)
+Outcome definition (Hyland et al., 2020):
+- Future window contains lactate >= 2 mmol/L AND (MAP <= 65 mmHg OR vasopressor/inotrope start)
 - Excludes windows where patient is already in circulatory failure at prediction time
 
 Usage:
@@ -21,11 +21,16 @@ import duckdb
 import pandas as pd
 import numpy as np
 
-OUTPUT_DIR = Path("/home/gaga/data/physionet/hirid/circulatory_failure")
+_TRAJ_DATA_ROOT = os.environ.get("TRAJ_DATA_ROOT", "/home/gaga/data/physionet")
+OUTPUT_DIR = Path(_TRAJ_DATA_ROOT) / "hirid" / "circulatory_failure"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-DB_PATH = "/home/gaga/data/physionet/HiRiD/hirid.duckdb"
-MIN_LOS_DAYS = 1.0
+DB_PATH = os.path.join(_TRAJ_DATA_ROOT, "HiRiD", "hirid.duckdb")
+MIN_LOS_DAYS = 2.0
+AGE_MIN, AGE_MAX = 18, 90
+MIN_TARGET_MEASUREMENTS = 5   # lactate measurements per stay
+FFILL_LIMIT = 3               # consecutive fills for vitals and labs
+MISSINGNESS_THRESHOLD = 0.7   # drop feature columns with more missing values than this
 PREDICTION_GAP_HOURS = 1.0
 PREDICTION_WINDOW_HOURS = 8.0
 MAP_THRESHOLD = 65.0
@@ -38,9 +43,12 @@ print("=" * 80)
 conn = duckdb.connect(DB_PATH, read_only=True)
 
 cohort_query = f"""
-SELECT patientid, admission_time, discharge_time, los_days
-FROM patient_info
-WHERE los_days >= {MIN_LOS_DAYS}
+SELECT p.patientid, p.admission_time, p.discharge_time, p.los_days,
+       CAST(g.age AS INTEGER) AS age, g.sex AS gender
+FROM patient_info p
+INNER JOIN ref_general_table g ON p.patientid = g.patientid
+WHERE p.los_days >= {MIN_LOS_DAYS}
+  AND CAST(g.age AS INTEGER) BETWEEN {AGE_MIN} AND {AGE_MAX}
 """
 
 cohort = conn.execute(cohort_query).fetchdf()
@@ -133,6 +141,16 @@ def add_baseline(df: pd.DataFrame, value_col: str, baseline_col: str) -> pd.Data
     )
     return df.merge(baseline, on='patientid', how='left')
 
+
+# Keep stays with enough measurements of the target clinical parameter (lactate)
+lactate_counts = lactate_ts.groupby('patientid').size()
+valid_ids = set(lactate_counts[lactate_counts >= MIN_TARGET_MEASUREMENTS].index)
+obs_df = obs_df[obs_df['patientid'].isin(valid_ids)].copy()
+lactate_ts = lactate_ts[lactate_ts['patientid'].isin(valid_ids)].copy()
+heartrate_ts = heartrate_ts[heartrate_ts['patientid'].isin(valid_ids)].copy()
+sbp_ts = sbp_ts[sbp_ts['patientid'].isin(valid_ids)].copy()
+cohort = cohort[cohort['patientid'].isin(valid_ids)].copy()
+print(f"✓ {len(valid_ids):,} stays with >= {MIN_TARGET_MEASUREMENTS} lactate measurements")
 
 lactate_ts = add_baseline(lactate_ts, 'lactate', 'baseline_lactate')
 heartrate_ts = add_baseline(heartrate_ts, 'heartrate', 'baseline_heartrate')
@@ -247,8 +265,9 @@ for patientid, grp in obs_daily.groupby('patientid'):
             start_hour = vaso_start[vaso_start['patientid'] == patientid]['vaso_start_hour'].iloc[0]
             vasopressor_in_window = prediction_start <= start_hour <= prediction_end
 
-        # Circulatory failure: (hypotension OR vasopressor) AND (high lactate OR no lactate data)
-        target = int((future_hypotension or vasopressor_in_window) and (future_lactate or len(future_lactate_df) == 0))
+        # Circulatory failure (Hyland et al., 2020): lactate >= 2 mmol/L AND
+        # (MAP <= 65 mmHg OR vasopressor/inotrope) within the prediction window
+        target = int(future_lactate and (future_hypotension or vasopressor_in_window))
         row = grp.iloc[i].to_dict()
         row['target_circulatory_failure'] = target
         failure_events.append(row)
@@ -269,6 +288,25 @@ else:
     positive_first = prediction_dataset[prediction_dataset['target_circulatory_failure'] == 1].groupby('patientid').first().reset_index()
     all_negatives = prediction_dataset[prediction_dataset['target_circulatory_failure'] == 0]
     prediction_dataset = pd.concat([all_negatives, positive_first], ignore_index=True).sort_values(['patientid', 'time_hour']).reset_index(drop=True)
+
+    # Static features (demographics, admission baselines) and forward-filled
+    # hourly features (labels above use the raw hourly values); then drop
+    # feature columns with >70% missing values
+    features = obs_daily.sort_values(['patientid', 'time_hour']).copy()
+    feat_cols = [c for c in features.columns if c not in ('patientid', 'time_hour')]
+    features[feat_cols] = features.groupby('patientid', sort=False)[feat_cols].ffill(limit=FFILL_LIMIT)
+    static = cohort[['patientid', 'age', 'gender']].copy()
+    for ts, col in [(lactate_ts, 'baseline_lactate'), (heartrate_ts, 'baseline_heartrate'), (sbp_ts, 'baseline_systolic')]:
+        static = static.merge(ts[['patientid', col]].drop_duplicates('patientid'), on='patientid', how='left')
+    prediction_dataset = (
+        prediction_dataset[['patientid', 'time_hour', 'target_circulatory_failure']]
+        .merge(features, on=['patientid', 'time_hour'], how='left')
+        .merge(static, on='patientid', how='left')
+    )
+    missing_pct = prediction_dataset[feat_cols].isnull().mean()
+    cols_to_drop = [c for c in missing_pct[missing_pct > MISSINGNESS_THRESHOLD].index if c != 'mean_MAP']
+    prediction_dataset = prediction_dataset.drop(columns=cols_to_drop)
+    print(f"  Dropped {len(cols_to_drop)} columns with >70% missing values")
 
     prediction_dataset.to_csv(OUTPUT_DIR / "circulatory_failure_prediction_dataset.csv", index=False)
 

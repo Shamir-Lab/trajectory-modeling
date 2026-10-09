@@ -1,2 +1,2 @@
-from .model import BootstrapTrajPS, BootstrapConfig
-__all__ = ["BootstrapTrajPS", "BootstrapConfig"]
+from .model import BootstrapTraj, BootstrapTrajPS, BootstrapConfig
+__all__ = ["BootstrapTraj", "BootstrapConfig", "BootstrapTrajPS"]

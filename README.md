@@ -32,7 +32,7 @@ pip install -e .[all]
 
 ## Quick Start
 
-Canonical operational script index: `scripts/README.md`  
+Canonical operational script index: `docs/scripts/README.md`  
 Proposed scripts reorganization plan: `docs/SCRIPTS_REORGANIZATION_PLAN.md`
 
 ### Extract Trajectory Features
@@ -60,32 +60,16 @@ trajectory_probs = model.embed(longitudinal_data)
 
 ```bash
 # AKI (serum creatinine trajectories)
-python scripts/trajectory/hirid/hirid_aki_trajs.py
+python scripts/trajectory/hirid/aki_trajs.py
 
 # Sepsis (lactate, WBC, platelets)
-python scripts/trajectory/hirid/hirid_sepsis_trajs.py
+python scripts/trajectory/hirid/sepsis_trajs.py
 
 # Ventilator weaning (P/F ratio)
-python scripts/trajectory/hirid/hirid_ventilator_trajs.py
+python scripts/trajectory/hirid/ventilator_trajs.py
 
 # Run a quick Bayesian subset smoke test (mimic/eicu/hirid)
 python scripts/trajectory/run_circulatory_failure_bayes_subset.py --dry-run
 ```
 
-## `.gitignore`
-```gitignore
-__pycache__/
-*.pyc
-*.pyo
-.venv/
-.env
-/data/
-logs/
-results/
-*.out
-*.err
-*.pid
-.*.pid
-*.pt
-.ipynb_checkpoints/
-```
+See the repository `.gitignore` for up-to-date ignore rules.

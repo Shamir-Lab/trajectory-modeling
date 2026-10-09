@@ -62,6 +62,10 @@ scripts/
   - `scripts/*_preprocessing/*` → `scripts/preprocess/{dataset}/*`
 - Leave old files as wrappers that exec/import the new script path.
 
+### Step 2b — name cleanup
+- Prefer short canonical names inside dataset folders.
+- Keep dataset-prefixed filenames only as compatibility wrappers.
+
 ### Step 3 — SLURM normalization
 - Move SLURM files to `run/`, `merge/`, `retry/` subtrees.
 - Standardize job logs under `${LOG_ROOT:-$REPO_ROOT/logs}`.
@@ -69,7 +73,7 @@ scripts/
 ### Step 4 — docs freeze
 - Canonical docs:
   - root README
-  - `scripts/README.md`
+  - `docs/scripts/README.md`
 - Mark migration/conversion summaries as historical.
 
 ## Acceptance checks

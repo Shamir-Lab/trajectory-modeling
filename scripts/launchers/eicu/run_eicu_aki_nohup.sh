@@ -14,6 +14,7 @@ OOF_K=${OOF_K:-10}
 PLOT_K=${PLOT_K:-10}
 SAVE_OOF=${SAVE_OOF:-0}
 WITH_PROBS_SOURCE=${WITH_PROBS_SOURCE:-default}
+RECOMPUTE_BOOTSTRAP_TRAJ=${RECOMPUTE_BOOTSTRAP_TRAJ:-0}
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -46,6 +47,10 @@ while [[ $# -gt 0 ]]; do
             WITH_PROBS_SOURCE="$2"
             shift 2
             ;;
+        --recompute-bootstrap-trajectories)
+            RECOMPUTE_BOOTSTRAP_TRAJ=1
+            shift
+            ;;
         --save-oof)
             SAVE_OOF=1
             shift
@@ -69,6 +74,7 @@ echo "  OOF Scope: $OOF_SCOPE"
 echo "  OOF K: $OOF_K"
 echo "  Plot K: $PLOT_K"
 echo "  With Probs Source: $WITH_PROBS_SOURCE"
+echo "  Recompute Bootstrap Trajectories: $RECOMPUTE_BOOTSTRAP_TRAJ"
 echo "  Save OOF: $SAVE_OOF"
 echo "  Start time: $(date)"
 echo ""
@@ -82,12 +88,18 @@ else
     OOF_ARGS+=(--no-save-oof)
 fi
 
+BOOTSTRAP_ARGS=()
+if [[ "$RECOMPUTE_BOOTSTRAP_TRAJ" == "1" ]]; then
+    BOOTSTRAP_ARGS+=(--recompute-bootstrap-trajectories)
+fi
+
 nohup python scripts/analysis/eicu/eicu_aki_analysis.py \
     --train-n-jobs "$TRAIN_N_JOBS" \
     --train-backend "$TRAIN_BACKEND" \
     --parallel-axis "$PARALLEL_AXIS" \
     --plot-k "$PLOT_K" \
     --with-probs-source "$WITH_PROBS_SOURCE" \
+    "${BOOTSTRAP_ARGS[@]}" \
     "${OOF_ARGS[@]}" \
     > logs/outs/eicu/eicu_aki_analysis.out 2> logs/errs/eicu/eicu_aki_analysis.err &
 

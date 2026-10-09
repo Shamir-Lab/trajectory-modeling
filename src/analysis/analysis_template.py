@@ -31,7 +31,7 @@ import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed as jdelayed
 
-from sklearn.metrics import roc_auc_score, average_precision_score
+from sklearn.metrics import roc_auc_score, average_precision_score, roc_curve, precision_recall_curve
 from sklearn.model_selection import GroupKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
@@ -44,6 +44,7 @@ from .analysis_utils import (
     load_named_table,
     safe_left_merge,
     biomarker_summary_stats,
+    encode_gender,
     organize_feature_sets,
     get_dataset_config,
     get_default_models,
@@ -97,10 +98,13 @@ class AnalysisConfig:
     OOF_SCOPE: str = "top-k"  # one of: all, top-k, representative-k
     OOF_K: int = 10
     PLOT_K: int = 10
+    TRAJ_FFILL_LIMIT: int = 2
+    SAVE_NOTEBOOK_STYLE_PLOTS: bool = True
     # Runtime bootstrap trajectory generation (used when bootstrap files are absent)
     COMPUTE_BOOTSTRAP_TRAJ: bool = True
     BOOTSTRAP_N: int = 200
     BOOTSTRAP_N_JOBS: int = 4
+    RECOMPUTE_BOOTSTRAP_TRAJ: bool = False
     # If True, treat legacy "*_with_probs" and standalone "*trajectory_probs*"
     # files as bootstrap trajectory sources and suffix trajectory columns with `_boot`.
     WITH_PROBS_IS_BOOTSTRAP: bool = False
@@ -337,16 +341,20 @@ class TrajectoryAnalysis:
             f"{marker_token}_rapid_boot",
         ]
 
-        if output_path.exists():
+        force_recompute = bool(getattr(self.config, "RECOMPUTE_BOOTSTRAP_TRAJ", False))
+
+        if output_path.exists() and not force_recompute:
             try:
                 boot_df = pd.read_csv(output_path)
                 if id_col_ts in boot_df.columns and windowing_col_ts in boot_df.columns and all(c in boot_df.columns for c in dst_cols):
                     return boot_df[[id_col_ts, windowing_col_ts] + dst_cols].copy()
             except Exception:
                 pass
+        elif output_path.exists() and force_recompute:
+            logger.info(f"    Recomputing bootstrap trajectories and overwriting: {output_path.name}")
 
         try:
-            from traj_features.backends.bootstrap import BootstrapTrajPS, BootstrapConfig
+            from traj_features.backends.bootstrap import BootstrapTraj, BootstrapConfig
             from traj_features.backends.bayes.classify import flags_from_traj, pos_flags_from_traj
         except Exception as e:
             logger.warning(f"    Bootstrap backend unavailable for {biomarker}: {e}")
@@ -393,10 +401,10 @@ class TrajectoryAnalysis:
             return None
 
         logger.info(f"    Computing bootstrap trajectories ({biomarker})...")
-        model = BootstrapTrajPS(
+        model = BootstrapTraj(
             BootstrapConfig(
                 window_years=float(boot_cfg.get("window", lookback_value)),
-                n_bootstrap=int(boot_cfg.get("n_bootstrap", getattr(self.config, "BOOTSTRAP_N", 200))),
+                n_bootstrap=int(boot_cfg.get("n_bootstrap", getattr(self.config, "BOOTSTRAP_N", 1000))),
                 flat_thr=float(boot_cfg.get("flat_thr", 0.1)),
                 decline_thr=float(boot_cfg.get("decline_thr", 0.3)),
                 nonlinear_gap=float(boot_cfg.get("nonlinear_gap", 0.5)),
@@ -544,7 +552,22 @@ class TrajectoryAnalysis:
         )
         
         # Organize features
-        feature_sets = organize_feature_sets(dataset, self.id_col, self._detect_windowing_col(dataset))
+        windowing_col = self._detect_windowing_col(dataset)
+        dataset = encode_gender(dataset.copy())
+        feature_sets = organize_feature_sets(dataset, self.id_col, windowing_col)
+        for group in ("static", "dynamic", "summary", "trajectory"):
+            logger.info(f"  {group} features ({len(feature_sets[group])}): {feature_sets[group]}")
+
+        # Notebook-style trajectory preprocessing: temporal carry-forward by patient.
+        dataset_model = dataset.copy()
+        traj_ffill_limit = int(getattr(self.config, "TRAJ_FFILL_LIMIT", 2))
+        if traj_ffill_limit > 0 and len(feature_sets["trajectory"]) > 0:
+            traj_cols_all = [c for c in feature_sets["trajectory"] if c in dataset_model.columns]
+            if traj_cols_all:
+                dataset_model = dataset_model.sort_values([self.id_col, windowing_col]).reset_index(drop=True)
+                dataset_model.loc[:, traj_cols_all] = (
+                    dataset_model.groupby(self.id_col)[traj_cols_all].ffill(limit=traj_ffill_limit)
+                )
         
         # Define notebook-aligned feature configurations
         traj_all = list(dict.fromkeys(feature_sets["trajectory"]))
@@ -712,12 +735,11 @@ class TrajectoryAnalysis:
         non_boosting_models = {"LogisticRegression", "RandomForest"}
         
         # Prepare data for CV
-        X_all = dataset[feature_sets["all_numeric"]].copy()
-        y_all = dataset[self.config.TARGET_COL].values
-        groups = dataset[self.id_col].values
-        windowing_col = self._detect_windowing_col(dataset)
-        id_all = dataset[self.id_col].values
-        win_all = dataset[windowing_col].values
+        X_all = dataset_model[feature_sets["all_numeric"]].copy()
+        y_all = dataset_model[self.config.TARGET_COL].values
+        groups = dataset_model[self.id_col].values
+        id_all = dataset_model[self.id_col].values
+        win_all = dataset_model[windowing_col].values
         
         # Remove rows with missing outcome or outcome-like columns
         y_series = pd.Series(y_all)
@@ -794,11 +816,20 @@ class TrajectoryAnalysis:
             """Run one CV repeat across all feature sets and models."""
             results = {}
             oof_rows = []
+
+            rng = np.random.RandomState(SEED + repeat_idx)
+            shuffle_idx = rng.permutation(len(X_all))
+            X_rep = X_all.iloc[shuffle_idx].reset_index(drop=True)
+            y_rep = y_all[shuffle_idx]
+            groups_rep = groups[shuffle_idx]
+            id_rep = id_all[shuffle_idx]
+            win_rep = win_all[shuffle_idx]
+
             gkf = GroupKFold(n_splits=n_splits)
-            
-            for fold_idx, (train_idx, test_idx) in enumerate(gkf.split(X_all, y_all, groups)):
-                X_train, X_test = X_all.iloc[train_idx], X_all.iloc[test_idx]
-                y_train, y_test = y_all[train_idx], y_all[test_idx]
+
+            for fold_idx, (train_idx, test_idx) in enumerate(gkf.split(X_rep, y_rep, groups_rep)):
+                X_train, X_test = X_rep.iloc[train_idx], X_rep.iloc[test_idx]
+                y_train, y_test = y_rep[train_idx], y_rep[test_idx]
                 
                 for model_name, model in models.items():
                     if model_name not in results:
@@ -822,7 +853,7 @@ class TrajectoryAnalysis:
                             )
 
                             if getattr(self.config, "SAVE_OOF", True):
-                                for pid, wv, yt, yp in zip(id_all[test_idx], win_all[test_idx], y_test, y_pred):
+                                for pid, wv, yt, yp in zip(id_rep[test_idx], win_rep[test_idx], y_test, y_pred):
                                     oof_rows.append(
                                         {
                                             "id": pid,
@@ -854,10 +885,18 @@ class TrajectoryAnalysis:
             oof_rows = []
 
             for repeat_idx in range(n_repeats):
+                rng = np.random.RandomState(SEED + repeat_idx)
+                shuffle_idx = rng.permutation(len(X_all))
+                X_rep = X_all.iloc[shuffle_idx].reset_index(drop=True)
+                y_rep = y_all[shuffle_idx]
+                groups_rep = groups[shuffle_idx]
+                id_rep = id_all[shuffle_idx]
+                win_rep = win_all[shuffle_idx]
+
                 gkf = GroupKFold(n_splits=n_splits)
-                for fold_idx, (train_idx, test_idx) in enumerate(gkf.split(X_all, y_all, groups)):
-                    X_train, X_test = X_all.iloc[train_idx], X_all.iloc[test_idx]
-                    y_train, y_test = y_all[train_idx], y_all[test_idx]
+                for fold_idx, (train_idx, test_idx) in enumerate(gkf.split(X_rep, y_rep, groups_rep)):
+                    X_train, X_test = X_rep.iloc[train_idx], X_rep.iloc[test_idx]
+                    y_train, y_test = y_rep[train_idx], y_rep[test_idx]
 
                     selected_cols = [c for c in feature_cols if c in X_train.columns]
                     if len(selected_cols) == 0:
@@ -875,7 +914,7 @@ class TrajectoryAnalysis:
                                 y_test=y_test,
                             )
                             if getattr(self.config, "SAVE_OOF", True):
-                                for pid, wv, yt, yp in zip(id_all[test_idx], win_all[test_idx], y_test, y_pred):
+                                for pid, wv, yt, yp in zip(id_rep[test_idx], win_rep[test_idx], y_test, y_pred):
                                     oof_rows.append(
                                         {
                                             "id": pid,
@@ -904,15 +943,16 @@ class TrajectoryAnalysis:
             return {"metrics": fs_results, "oof": oof_rows}
         
         if parallel_axis == "feature-set" and n_jobs > 1:
-            fs_results = Parallel(n_jobs=n_jobs, backend=backend, verbose=1)(
+            # Use threading backend to avoid loky hanging issues
+            fs_results = Parallel(n_jobs=n_jobs, backend="threading", verbose=1)(
                 jdelayed(_run_one_feature_set)(item) for item in feature_configs.items()
             )
             repeat_results = []
             for fs_dict in fs_results:
                 repeat_results.append(fs_dict)
         else:
-            # Run repeats in parallel
-            repeat_results = Parallel(n_jobs=n_jobs, backend=backend, verbose=1)(
+            # Run repeats in parallel (use threading to avoid loky hanging)
+            repeat_results = Parallel(n_jobs=n_jobs, backend="threading", verbose=1)(
                 jdelayed(_run_one_repeat)(i) for i in range(n_repeats)
             )
         
@@ -973,6 +1013,9 @@ class TrajectoryAnalysis:
             "oof_scope": str(getattr(self.config, "OOF_SCOPE", "top-k")),
             "oof_k": int(getattr(self.config, "OOF_K", 10)),
             "plot_k": int(getattr(self.config, "PLOT_K", 10)),
+            "recompute_bootstrap_trajectories": bool(getattr(self.config, "RECOMPUTE_BOOTSTRAP_TRAJ", False)),
+            "traj_ffill_limit": int(getattr(self.config, "TRAJ_FFILL_LIMIT", 2)),
+            "save_notebook_style_plots": bool(getattr(self.config, "SAVE_NOTEBOOK_STYLE_PLOTS", True)),
             "feature_sets": {
                 name: {
                     "n_features": int(len(cols)),
@@ -1080,6 +1123,121 @@ class TrajectoryAnalysis:
 
         _plot_subset(top_df, f"top_k_{k}")
         _plot_subset(rep_df, f"representative_k_{k}")
+
+    def _save_notebook_style_plots(self, results_df: pd.DataFrame, results_name: str):
+        if not bool(getattr(self.config, "SAVE_NOTEBOOK_STYLE_PLOTS", True)):
+            return
+
+        if results_df.empty or not self._last_fold_rows or not self._last_oof_rows:
+            return
+
+        try:
+            import matplotlib.pyplot as plt
+        except Exception as e:
+            logger.warning(f"Skipping notebook-style plots (matplotlib unavailable): {e}")
+            return
+
+        fold_df = pd.DataFrame(self._last_fold_rows)
+        oof_df = pd.DataFrame(self._last_oof_rows)
+        if fold_df.empty or oof_df.empty:
+            return
+
+        k = int(getattr(self.config, "PLOT_K", 10))
+        ranked = results_df.sort_values(["aupr_mean", "auroc_mean"], ascending=False)
+        chosen = ranked.head(max(1, k)).copy()
+        pairs = list(zip(chosen["model"], chosen["feature_set"]))
+        if not pairs:
+            return
+
+        labels = [f"{m} | {fs}" for m, fs in pairs]
+
+        # Fold-wise boxplots for AUROC/AUPR
+        roc_data = []
+        ap_data = []
+        for m, fs in pairs:
+            d = fold_df[(fold_df["model"] == m) & (fold_df["feature_set"] == fs)]
+            roc_data.append(d["auroc"].dropna().to_numpy())
+            ap_data.append(d["aupr"].dropna().to_numpy())
+
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(18, 7), constrained_layout=True)
+        ax1.boxplot(roc_data, labels=labels, patch_artist=True, showmeans=True)
+        ax1.axhline(0.5, linestyle="--", linewidth=1, color="gray", alpha=0.8)
+        ax1.set_ylabel("AUROC")
+        ax1.set_title("AUROC Distribution Across Folds")
+        ax1.tick_params(axis="x", rotation=45)
+        ax1.grid(axis="y", alpha=0.3)
+
+        baseline = float(oof_df["y_true"].mean()) if "y_true" in oof_df.columns else np.nan
+        ax2.boxplot(ap_data, labels=labels, patch_artist=True, showmeans=True)
+        if np.isfinite(baseline):
+            ax2.axhline(baseline, linestyle="--", linewidth=1, color="gray", alpha=0.8)
+        ax2.set_ylabel("AUPR")
+        ax2.set_title("AUPR Distribution Across Folds")
+        ax2.tick_params(axis="x", rotation=45)
+        ax2.grid(axis="y", alpha=0.3)
+
+        out_box = self.output_dir / f"{results_name}_notebook_boxplots.png"
+        fig.savefig(out_box, dpi=160)
+        plt.close(fig)
+
+        # Mean ROC/PR curves with ±1 SD shading across fold-level curves.
+        fig, (axr, axp) = plt.subplots(1, 2, figsize=(18, 7), constrained_layout=True)
+        grid = np.linspace(0, 1, 100)
+
+        for (m, fs), label in zip(pairs, labels):
+            group_df = oof_df[(oof_df["model"] == m) & (oof_df["feature_set"] == fs)]
+            if group_df.empty:
+                continue
+
+            roc_curves = []
+            pr_curves = []
+            for (_, _), fd in group_df.groupby(["repeat", "fold"]):
+                y_true = fd["y_true"].to_numpy()
+                y_pred = fd["y_pred"].to_numpy()
+                if len(np.unique(y_true)) < 2:
+                    continue
+
+                fpr, tpr, _ = roc_curve(y_true, y_pred)
+                precision, recall, _ = precision_recall_curve(y_true, y_pred)
+
+                roc_curves.append(np.interp(grid, fpr, tpr))
+                pr_curves.append(np.interp(grid, recall[::-1], precision[::-1]))
+
+            if len(roc_curves) == 0 or len(pr_curves) == 0:
+                continue
+
+            roc_arr = np.vstack(roc_curves)
+            pr_arr = np.vstack(pr_curves)
+
+            roc_mean = roc_arr.mean(axis=0)
+            roc_std = roc_arr.std(axis=0)
+            pr_mean = pr_arr.mean(axis=0)
+            pr_std = pr_arr.std(axis=0)
+
+            axr.plot(grid, roc_mean, linewidth=2, label=label)
+            axr.fill_between(grid, roc_mean - roc_std, roc_mean + roc_std, alpha=0.2)
+
+            axp.plot(grid, pr_mean, linewidth=2, label=label)
+            axp.fill_between(grid, pr_mean - pr_std, pr_mean + pr_std, alpha=0.2)
+
+        axr.plot([0, 1], [0, 1], "k--", linewidth=1, alpha=0.8)
+        axr.set_xlabel("False Positive Rate")
+        axr.set_ylabel("True Positive Rate")
+        axr.set_title("ROC Curves (mean ± SD)")
+        axr.grid(alpha=0.3)
+        axr.legend(fontsize=8)
+
+        if np.isfinite(baseline):
+            axp.plot([0, 1], [baseline, baseline], "k--", linewidth=1, alpha=0.8)
+        axp.set_xlabel("Recall")
+        axp.set_ylabel("Precision")
+        axp.set_title("Precision-Recall Curves (mean ± SD)")
+        axp.grid(alpha=0.3)
+        axp.legend(fontsize=8)
+
+        out_rocpr = self.output_dir / f"{results_name}_notebook_roc_pr.png"
+        fig.savefig(out_rocpr, dpi=160)
+        plt.close(fig)
     
     def save_results(self, results: dict, results_name: Optional[str] = None):
         """
@@ -1137,6 +1295,7 @@ class TrajectoryAnalysis:
 
         # Save PNG plots (all / top-k / representative-k)
         self._save_png_plots(results_df, results_name)
+        self._save_notebook_style_plots(results_df, results_name)
 
         # Save metadata/config snapshot for reproducibility
         meta_path = self.output_dir / f"{results_name}_metadata.json"
@@ -1291,6 +1450,11 @@ def main_cli(
         default=None,
         help="K value for top-k and representative-k PNG plots.",
     )
+    parser.add_argument(
+        "--recompute-bootstrap-trajectories",
+        action="store_true",
+        help="Force recomputation of bootstrap trajectory probabilities even when cached files exist.",
+    )
     
     args = parser.parse_args()
     
@@ -1341,6 +1505,8 @@ def main_cli(
         config.OOF_K = args.oof_k
     if args.plot_k is not None:
         config.PLOT_K = args.plot_k
+    if args.recompute_bootstrap_trajectories:
+        config.RECOMPUTE_BOOTSTRAP_TRAJ = True
     
     # Run analysis
     try:
