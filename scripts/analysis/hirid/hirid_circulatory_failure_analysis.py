@@ -200,7 +200,9 @@ def build_feature_sets(dataset: pd.DataFrame):
     if "gender" in dataset.columns:
         dataset["gender"] = dataset["gender"].map({"M": 1, "F": 0})
 
+    # Static: demographics and the admission baseline of each target parameter
     static_features = [c for c in ["age", "gender"] if c in dataset.columns]
+    static_features += [c for c in dataset.columns if c.startswith("baseline_")]
 
     # Trajectory columns from both backends, kept strictly disjoint: bayes-sourced
     # columns are unsuffixed, bootstrap-sourced columns carry a "_boot" suffix
@@ -243,7 +245,10 @@ def build_feature_sets(dataset: pd.DataFrame):
         if any(x in col for x in ["heart_rate", "respiratory_rate", "o2_sat", "systolic", "diastolic", "mean_bp", "temperature"])
         and col not in non_baseline_cols
     ]
-    dynamic_features = list(dict.fromkeys(dynamic_labs + dynamic_vitals))
+    dynamic_features = [
+        c for c in dict.fromkeys(dynamic_labs + dynamic_vitals)
+        if c not in static_features  # e.g. "baseline_systolic" contains "systolic"
+    ]
 
     baseline_features = static_features + dynamic_features
     if len(baseline_features) == 0:

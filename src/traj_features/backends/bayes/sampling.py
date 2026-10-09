@@ -14,7 +14,9 @@ def _scale_vals_and_grid(df_basis, dfw, values, time_col, tmin, span):
     y_mu  = float(np.mean(y_raw))
     y_sd  = float(np.std(y_raw)) if np.std(y_raw) > 0 else 1.0
     y_std = (y_raw - y_mu) / y_sd
-    df_eff = int(min(df_basis, max(4, len(dfw) - 1), 8))
+    # Effective basis size d_eff = min{max{4, n-1}, 8} (thesis Methods, Sec. 2.1).
+    # df_basis is kept in the signatures for backward compatibility only.
+    df_eff = int(min(max(4, len(dfw) - 1), 8))
     X = dmatrix(f"bs(time_scaled, df={df_eff}, include_intercept=True)",
                 dfw, return_type='dataframe').to_numpy()
     return X, y_mu, y_sd, y_std, df_eff

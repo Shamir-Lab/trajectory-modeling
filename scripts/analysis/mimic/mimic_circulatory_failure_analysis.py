@@ -286,7 +286,9 @@ def prepare_features(dataset, id_col, windowing_col, lactate_ts, heartrate_ts, s
         gender_map = {'M': 1, 'F': 0}
         dataset['gender'] = dataset['gender'].map(gender_map)
 
+    # Static: demographics, weight, and the admission baseline of each target parameter
     static_features = [c for c in ['age', 'gender'] if c in dataset.columns]
+    static_features += [c for c in dataset.columns if c.startswith(('baseline_', 'weight_'))]
 
     lactate_traj = ['lactate_stable', 'lactate_gradual', 'lactate_rapid', 'lactate_worsening']
     heartrate_traj = ['heartrate_stable', 'heartrate_gradual', 'heartrate_rapid', 'heartrate_worsening']
@@ -326,7 +328,18 @@ def prepare_features(dataset, id_col, windowing_col, lactate_ts, heartrate_ts, s
         if any(x in col for x in ['heart_rate', 'respiratory_rate', 'o2_sat', 'systolic', 'diastolic', 'mean_bp', 'temperature'])
         and col not in non_baseline_cols
     ]
-    dynamic_features = list(dict.fromkeys(dynamic_labs + dynamic_vitals))
+    # MIMIC names its hourly aggregates with a suffix ("heartrate_mean",
+    # "sysbp_min"), which neither rule above matches.
+    dynamic_suffixed = [
+        col for col in dataset.columns
+        if col.endswith(('_min', '_max', '_mean'))
+        and not any(keyword in col.lower() for keyword in exclude_keywords)
+        and col not in non_baseline_cols
+    ]
+    dynamic_features = [
+        c for c in dict.fromkeys(dynamic_labs + dynamic_vitals + dynamic_suffixed)
+        if c not in static_features  # e.g. "baseline_systolic" contains "systolic"
+    ]
     static_dynamic_cols = static_features + dynamic_features
 
     def _has_data(cols):

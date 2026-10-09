@@ -19,6 +19,31 @@ import numpy as np
 from typing import List, Dict, Optional, Tuple
 
 
+# Cohort and missing-data settings shared by all eICU tasks (as in the thesis
+# Methods): at least MIN_TARGET_MEASUREMENTS measurements of the target clinical
+# parameter; vitals and labs forward-filled for at most FFILL_LIMIT consecutive
+# intervals (age, gender and weight without limit); columns with more than
+# MISSINGNESS_THRESHOLD missing values dropped.
+MIN_TARGET_MEASUREMENTS = 5
+FFILL_LIMIT = 3
+MISSINGNESS_THRESHOLD = 0.7
+UNBOUNDED_FFILL_COLS = ("age", "gender")
+
+
+def ffill_within_stay(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
+    """Forward-fill within each stay (df sorted by id and time); see FFILL_LIMIT."""
+    df = df.copy()
+    cols = [c for c in df.columns if c != id_col]
+    unbounded = [c for c in cols if c in UNBOUNDED_FFILL_COLS or c.lower().startswith("weight")]
+    capped = [c for c in cols if c not in unbounded]
+    grouped = df.groupby(id_col, sort=False)
+    if capped:
+        df[capped] = grouped[capped].ffill(limit=FFILL_LIMIT)
+    if unbounded:
+        df[unbounded] = grouped[unbounded].ffill()
+    return df
+
+
 class EICULoader:
     """Query eICU-CRD v2.0 DuckDB and return MIMIC-shaped dataframes."""
     
@@ -108,19 +133,21 @@ class EICULoader:
         """
         Load liver cohort: patients with chronic liver disease diagnoses.
         
-        Diagnoses: ICD-9 codes 571% (cirrhosis), 5722% (encephalopathy), 
-        5728% (hepatorenal), V427% (transplant)
+        Diagnoses: ICD-9 codes 571.x (chronic liver disease and cirrhosis),
+        572.2 (hepatic encephalopathy), 572.8 (other sequelae of chronic liver
+        disease), V42.7 (liver transplant status).
+
+        eICU stores dotted codes, often several per field ("571.5, K74.60"),
+        so codes are matched at code boundaries rather than as MIMIC-style
+        undotted prefixes (which matched only 571.x).
         """
         query = f"""
         WITH liver_patients AS (
             SELECT DISTINCT p.patientunitstayid
             FROM diagnosis d
             INNER JOIN patient p ON d.patientunitstayid = p.patientunitstayid
-            WHERE 
-                d.icd9code LIKE '571%' OR
-                d.icd9code LIKE '5722%' OR
-                d.icd9code LIKE '5728%' OR
-                d.icd9code LIKE 'V427%'
+            WHERE
+                regexp_matches(d.icd9code, '(^|, *)(571([.]|,|$)|572[.][28]|V42[.]7)')
         )
         SELECT 
             p.patientunitstayid::INTEGER AS patientunitstayid,
@@ -154,19 +181,20 @@ class EICULoader:
         """
         Load sepsis cohort: patients with sepsis diagnoses.
         
-        Diagnoses: ICD-9 codes 995.91 (sepsis), 995.92 (severe sepsis), 
-        995.94 (septic shock), and variants with R65 codes
+        Diagnoses: ICD-9 995.91 (sepsis), 995.92 (severe sepsis), 785.52
+        (septic shock), ICD-10 R65.2x (severe sepsis / septic shock), or a
+        diagnosis string mentioning sepsis or septic shock. Codes are matched
+        at code boundaries because eICU fields hold several codes
+        ("038.9, 785.52, R65.21"). Non-infectious SIRS (995.93/995.94,
+        R65.1x) is not sepsis and is not included.
         """
         query = f"""
         WITH sepsis_patients AS (
             SELECT DISTINCT p.patientunitstayid
             FROM diagnosis d
             INNER JOIN patient p ON d.patientunitstayid = p.patientunitstayid
-            WHERE 
-                d.icd9code LIKE '995.91%' OR
-                d.icd9code LIKE '995.92%' OR
-                d.icd9code LIKE '995.94%' OR
-                d.icd9code LIKE 'R65%' OR
+            WHERE
+                regexp_matches(d.icd9code, '(^|, *)(995[.]9[12]|785[.]52|R65[.]2)') OR
                 d.diagnosisstring LIKE '%sepsis%' OR
                 d.diagnosisstring LIKE '%septic shock%'
         )

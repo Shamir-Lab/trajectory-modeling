@@ -24,7 +24,7 @@ from tqdm import tqdm
 
 sys.path.insert(0, os.path.abspath('src'))
 
-from eicu_loader import EICULoader
+from eicu_loader import EICULoader, ffill_within_stay, MIN_TARGET_MEASUREMENTS, MISSINGNESS_THRESHOLD
 
 OUTPUT_DIR = Path("/home/gaga/data/physionet/eicu/circulatory_failure")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -34,7 +34,7 @@ PREDICTION_GAP_HOURS = 1.0
 PREDICTION_WINDOW_HOURS = 8.0
 MAP_THRESHOLD = 65.0
 LACTATE_THRESHOLD = 2.0
-MIN_MEASUREMENTS = 3
+MIN_MEASUREMENTS = MIN_TARGET_MEASUREMENTS  # lactate measurements per stay
 
 print("=" * 80)
 print("eICU Circulatory Failure Preprocessing")
@@ -307,6 +307,19 @@ print(f"  Excluded (no future data): {excluded['no_future_data']:,}")
 positive_first = prediction_dataset[prediction_dataset['target_circulatory_failure'] == 1].groupby('stay_id').first().reset_index()
 all_negatives = prediction_dataset[prediction_dataset['target_circulatory_failure'] == 0]
 prediction_dataset = pd.concat([all_negatives, positive_first], ignore_index=True).sort_values(['stay_id', 'time_hour']).reset_index(drop=True)
+
+# Features: forward-filled within stay (labels above use the raw hourly values),
+# then columns with >70% missing values dropped
+features_filled = ffill_within_stay(prediction_base.sort_values(['stay_id', 'time_hour']), 'stay_id')
+prediction_dataset = prediction_dataset[['stay_id', 'time_hour', 'target_circulatory_failure']].merge(
+    features_filled, on=['stay_id', 'time_hour'], how='left'
+)
+missing_pct = prediction_dataset.isnull().mean()
+keep_cols = {'stay_id', 'time_hour', 'target_circulatory_failure', 'age', 'gender', 'hospital_expire_flag',
+             'mean_lactate', 'mean_bp_mean'}
+cols_to_drop = [c for c in missing_pct[missing_pct > MISSINGNESS_THRESHOLD].index if c not in keep_cols]
+prediction_dataset = prediction_dataset.drop(columns=cols_to_drop)
+print(f"  Dropped {len(cols_to_drop)} columns with >70% missing values")
 
 prediction_dataset.to_csv(OUTPUT_DIR / "circulatory_failure_prediction_dataset.csv", index=False)
 print(f"✓ Saved {len(prediction_dataset):,} rows")

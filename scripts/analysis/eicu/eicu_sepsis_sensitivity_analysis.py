@@ -560,11 +560,11 @@ def phi_sensitivity(
         warnings.simplefilter("ignore", category=RuntimeWarning)
         if direction == "increase":
             flat_cond = slopes <= tau_decline
-            total_flat = np.nanmean(slopes, axis=-1) <= tau_flat
+            total_flat = np.abs(np.nanmean(slopes, axis=-1)) <= abs(tau_flat)  # |mean slope| <= |tau_flat|
             decl_cond = slopes > tau_decline
         else:
             flat_cond = slopes >= tau_decline
-            total_flat = np.nanmean(slopes, axis=-1) >= tau_flat
+            total_flat = np.abs(np.nanmean(slopes, axis=-1)) <= abs(tau_flat)  # |mean slope| <= |tau_flat|
             decl_cond = slopes < tau_decline
 
         def _nan_frac(cond: np.ndarray) -> np.ndarray:

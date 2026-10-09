@@ -31,6 +31,11 @@ from common import (
     ensure_time_day,
     aggregate_vitals_labs,
     drop_high_missing_columns,
+    ffill_within_stay,
+    fetch_vasopressor_starts,
+    ICU_LOS_SQL,
+    MIN_TARGET_MEASUREMENTS,
+    MISSINGNESS_THRESHOLD,
 )
 
 OUTPUT_DIR = Path("results/mimic/sepsis")
@@ -43,16 +48,16 @@ print("=" * 80)
 paths = MIMICPaths()
 conn = connect_db(paths.db_path)
 
-hadm_query = """
+hadm_query = f"""
 WITH sepsis_patients AS (
     SELECT DISTINCT a.hadm_id
     FROM admissions a
     INNER JOIN diagnoses_icd d ON a.hadm_id = d.hadm_id
     WHERE 
-        (d.icd9_code LIKE '99591' OR
-         d.icd9_code LIKE '99592' OR
-         d.icd9_code LIKE '99594' OR
-         d.icd9_code LIKE '78552')
+        (d.icd9_code LIKE '99591' OR  -- sepsis
+         d.icd9_code LIKE '99592' OR  -- severe sepsis
+         d.icd9_code LIKE '78552')    -- septic shock
+        -- 99594 (SIRS due to a non-infectious process) is not sepsis
 )
 SELECT 
     a.subject_id::INTEGER AS subject_id,
@@ -69,7 +74,7 @@ INNER JOIN patients p ON a.subject_id = p.subject_id
 INNER JOIN sepsis_patients sp ON a.hadm_id = sp.hadm_id
 WHERE 
     CAST((a.admittime::DATE - p.dob::DATE) / 365.25 AS INT) BETWEEN 18 AND 90
-    AND CAST(a.dischtime::DATE - a.admittime::DATE AS REAL) >= 2.0
+    AND {ICU_LOS_SQL}
 """
 
 hadm_df = conn.execute(hadm_query).fetchdf()
@@ -93,6 +98,15 @@ platelet_df = fetch_labevents_timeseries(conn, hadm_ids, platelet_items, "platel
 lactate_df = ensure_time_day(lactate_df)
 wbc_df = ensure_time_day(wbc_df)
 platelet_df = ensure_time_day(platelet_df)
+
+# Keep admissions with enough measurements of the target clinical parameter
+lactate_counts = lactate_df.groupby("hadm_id").size()
+hadm_ids = lactate_counts[lactate_counts >= MIN_TARGET_MEASUREMENTS].index.astype(int).tolist()
+hadm_df = hadm_df[hadm_df["hadm_id"].isin(hadm_ids)].copy()
+lactate_df = lactate_df[lactate_df["hadm_id"].isin(hadm_ids)].copy()
+wbc_df = wbc_df[wbc_df["hadm_id"].isin(hadm_ids)].copy()
+platelet_df = platelet_df[platelet_df["hadm_id"].isin(hadm_ids)].copy()
+print(f"✓ {len(hadm_ids):,} admissions with >= {MIN_TARGET_MEASUREMENTS} lactate measurements")
 
 
 def add_baseline_and_demographics(df: pd.DataFrame, value_col: str, baseline_col: str) -> pd.DataFrame:
@@ -156,11 +170,11 @@ if len(vitals_df) > 0 and len(labs_df) > 0:
 
     # Forward-fill imputation within each admission
     hadm_final = hadm_final.sort_values(["hadm_id", "time_day"])
-    hadm_final = hadm_final.set_index("hadm_id").groupby(level=0).ffill().reset_index()
+    hadm_final = ffill_within_stay(hadm_final, "hadm_id")
 
-    # Drop columns with >20% missing (eICU-style)
+    # Drop columns with >70% missing
     missing_pct = hadm_final.isnull().mean()
-    cols_to_drop = missing_pct[missing_pct > 0.2].index.tolist()
+    cols_to_drop = missing_pct[missing_pct > MISSINGNESS_THRESHOLD].index.tolist()
     for col in ["hadm_id", "time_day", "lactate_mean", "hospital_expire_flag", "age", "gender"]:
         if col in cols_to_drop:
             cols_to_drop.remove(col)
@@ -173,21 +187,15 @@ if len(vitals_df) > 0 and len(labs_df) > 0:
     hadm_final = hadm_final.merge(baseline_wbc, on="hadm_id", how="left")
     hadm_final = hadm_final.merge(baseline_platelet, on="hadm_id", how="left")
 
-    # Detect vasopressor use
-    vasopressor_query = """
-    SELECT DISTINCT
-        a.hadm_id::INT as hadm_id,
-        MIN(EXTRACT(EPOCH FROM (ie.starttime::timestamp - a.admittime::timestamp)) / 86400) as vaso_start_day
-    FROM inputevents_mv ie
-    INNER JOIN admissions a ON ie.hadm_id = a.hadm_id
-    WHERE
-        ie.itemid IN (30047, 30120, 221906, 221289, 30044, 30119, 30309)
-        AND a.hadm_id::INT IN {hadm_ids}
-    GROUP BY a.hadm_id
-    """
-
-    vasopressor_df = conn.execute(vasopressor_query.format(hadm_ids=tuple(hadm_final["hadm_id"].tolist()))).fetchdf()
-    vasopressor_df.columns = vasopressor_df.columns.str.lower()
+    # Detect vasopressor use (norepinephrine, epinephrine; MetaVision and CareVue)
+    vasopressor_df = fetch_vasopressor_starts(
+        conn,
+        hadm_final["hadm_id"].astype(int).unique().tolist(),
+        mv_items=(221906, 221289),
+        cv_items=(30047, 30120, 30044, 30119, 30309),
+        out_col="vaso_start_day",
+        seconds_per_unit=86400,
+    )
     print(f"✓ Detected vasopressors in {len(vasopressor_df):,} admissions")
 
     # Define septic shock outcome (matches notebook logic)

@@ -25,7 +25,8 @@ def flags_from_traj(traj, time_grid, flat_thr=-1, decline_thr=-2, nonlinear_gap=
 
     # prolonged nonprogression: mostly flat and average slope of non-progression
     frac_flat = (slopes >= decline_thr).mean()
-    total_flat = np.mean(slopes) >= flat_thr
+    # |mean slope| <= |flat_thr| (thesis Methods, Sec. 2.2)
+    total_flat = abs(np.mean(slopes)) <= abs(flat_thr)
 
     # linear decline: mostly steeply negative
     frac_decl = (slopes < decline_thr).mean()
@@ -106,7 +107,8 @@ def pos_flags_from_traj(traj, time_grid, flat_thr=0.5, decline_thr=1, nonlinear_
     slopes = dy / dt
 
     frac_flat = (slopes <= decline_thr).mean()
-    total_flat = np.mean(slopes) <= flat_thr
+    # |mean slope| <= |flat_thr| (thesis Methods, Sec. 2.2)
+    total_flat = abs(np.mean(slopes)) <= abs(flat_thr)
 
     frac_decl = (slopes > decline_thr).mean()
 

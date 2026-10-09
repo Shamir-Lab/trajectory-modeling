@@ -11,7 +11,7 @@ Mirrors MIMIC AKI preprocessing:
    - Creatinine ≥3× baseline OR ≥4 mg/dL + rise ≥0.5
    - OR dialysis initiation
 7. Forward-fill imputation
-8. Drop >20% missing columns
+8. Drop >70% missing columns
 9. First positive event only per patient
 10. Save prediction dataset
 
@@ -25,14 +25,14 @@ sys.path.insert(0, os.path.abspath('src'))
 
 import pandas as pd
 import numpy as np
-from eicu_loader import EICULoader
+from eicu_loader import EICULoader, ffill_within_stay, MIN_TARGET_MEASUREMENTS, MISSINGNESS_THRESHOLD
 from tqdm import tqdm
 
 # Configuration
 PREDICTION_GAP_DAYS = 0.5      # Don't predict events within 12h
 PREDICTION_WINDOW_DAYS = 4.0   # Predict AKI Stage 3 within 4 days after gap
 LOOKBACK_DAYS = 7.0            # Use 7 days of historical data for features
-MIN_CREAT_MEASUREMENTS = 5     # Minimum creatinine measurements required (match MIMIC)
+MIN_CREAT_MEASUREMENTS = MIN_TARGET_MEASUREMENTS  # Minimum measurements of the target clinical parameter
 _TRAJ_DATA_ROOT = os.environ.get("TRAJ_DATA_ROOT", "/home/gaga/data/physionet")
 OUTPUT_PATH = os.path.join(_TRAJ_DATA_ROOT, "eicu", "aki", "aki_prediction_dataset.csv")
 
@@ -252,12 +252,12 @@ else:
 # Forward-fill imputation within each patient
 print("\n[6/10] Forward-fill imputation...")
 daily_features = daily_features.sort_values(['stay_id', 'time_day'])
-daily_features = daily_features.set_index('stay_id').groupby(level=0).ffill().reset_index()
+daily_features = ffill_within_stay(daily_features, 'stay_id')
 
-# Drop columns with >20% missing
-print("\n[7/10] Dropping columns with >20% missing...")
+# Drop columns with >70% missing
+print("\n[7/10] Dropping columns with >70% missing...")
 missing_pct = daily_features.isnull().mean()
-cols_to_drop = missing_pct[missing_pct > 0.2].index.tolist()
+cols_to_drop = missing_pct[missing_pct > MISSINGNESS_THRESHOLD].index.tolist()
 if 'stay_id' in cols_to_drop:
     cols_to_drop.remove('stay_id')
 if 'time_day' in cols_to_drop:

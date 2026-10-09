@@ -29,6 +29,11 @@ from common import (
     fetch_vitals_labs,
     ensure_time_day,
     aggregate_vitals_labs,
+    ffill_within_stay,
+    ICU_LOS_SQL,
+    MIN_TARGET_MEASUREMENTS,
+    MISSINGNESS_THRESHOLD,
+    fetch_vasopressor_starts,
 )
 
 OUTPUT_DIR = Path(os.environ.get("TRAJ_DATA_ROOT", "/home/gaga/data/physionet")) / "mimic" / "circulatory_failure"
@@ -47,7 +52,7 @@ print("=" * 80)
 paths = MIMICPaths()
 conn = connect_db(paths.db_path)
 
-hadm_query = """
+hadm_query = f"""
 SELECT 
     a.subject_id::INTEGER AS subject_id,
     a.hadm_id::INTEGER AS hadm_id,
@@ -62,7 +67,7 @@ FROM admissions a
 INNER JOIN patients p ON a.subject_id = p.subject_id
 WHERE 
     CAST((a.admittime::DATE - p.dob::DATE) / 365.25 AS INT) BETWEEN 18 AND 90
-    AND CAST(a.dischtime::DATE - a.admittime::DATE AS REAL) >= 2.0
+    AND {ICU_LOS_SQL}
 """
 
 hadm_df = conn.execute(hadm_query).fetchdf()
@@ -83,6 +88,13 @@ sbp_items = vital_meta[vital_meta["feature_upper"] == "SYSBP"]["itemid"].tolist(
 map_items = vital_meta[vital_meta["feature_upper"] == "MEANBP"]["itemid"].tolist()
 
 lactate_df = fetch_labevents_timeseries(conn, hadm_ids, lactate_items, "lactate", 0.1, 50.0)
+
+# Keep admissions with enough measurements of the target clinical parameter (lactate)
+lactate_counts = lactate_df.groupby("hadm_id").size()
+hadm_ids = lactate_counts[lactate_counts >= MIN_TARGET_MEASUREMENTS].index.astype(int).tolist()
+hadm_df = hadm_df[hadm_df["hadm_id"].isin(hadm_ids)].copy()
+lactate_df = lactate_df[lactate_df["hadm_id"].isin(hadm_ids)].copy()
+print(f"✓ {len(hadm_ids):,} admissions with >= {MIN_TARGET_MEASUREMENTS} lactate measurements")
 
 vitals_df, _ = fetch_vitals_labs(conn, hadm_ids=hadm_ids, vital_items=list(set(hr_items + sbp_items + map_items)), lab_items=[])
 
@@ -192,10 +204,10 @@ if len(vitals_df) > 0 and len(labs_df) > 0:
     hadm_final = hadm_final.drop_duplicates(subset=["hadm_id", "time_hour"])
 
     hadm_final = hadm_final.sort_values(["hadm_id", "time_hour"])
-    hadm_final = hadm_final.set_index("hadm_id").groupby(level=0).ffill().reset_index()
+    hadm_final = ffill_within_stay(hadm_final, "hadm_id")
 
     missing_pct = hadm_final.isnull().mean()
-    cols_to_drop = missing_pct[missing_pct > 0.2].index.tolist()
+    cols_to_drop = missing_pct[missing_pct > MISSINGNESS_THRESHOLD].index.tolist()
     required_cols = ["lactate_mean", "meanbp_mean"]
     for col in ["hadm_id", "time_hour", "hospital_expire_flag", "age", "gender"] + required_cols:
         if col in cols_to_drop:
@@ -209,20 +221,16 @@ if len(vitals_df) > 0 and len(labs_df) > 0:
     hadm_final = hadm_final.merge(baseline_hr, on="hadm_id", how="left")
     hadm_final = hadm_final.merge(baseline_sbp, on="hadm_id", how="left")
 
-    vasopressor_query = """
-    SELECT DISTINCT
-        a.hadm_id::INT as hadm_id,
-        MIN(EXTRACT(EPOCH FROM (ie.starttime::timestamp - a.admittime::timestamp)) / 3600) as vaso_start_hour
-    FROM inputevents_mv ie
-    INNER JOIN admissions a ON ie.hadm_id = a.hadm_id
-    WHERE
-        ie.itemid IN (30047, 30120, 221906, 221289, 30044, 30119, 30309, 221662, 221653)
-        AND a.hadm_id::INT IN {hadm_ids}
-    GROUP BY a.hadm_id
-    """
-
-    vasopressor_df = conn.execute(vasopressor_query.format(hadm_ids=tuple(hadm_final["hadm_id"].tolist()))).fetchdf()
-    vasopressor_df.columns = vasopressor_df.columns.str.lower()
+    # Vasopressors/inotropes (norepinephrine, epinephrine, dopamine, dobutamine;
+    # MetaVision and CareVue)
+    vasopressor_df = fetch_vasopressor_starts(
+        conn,
+        hadm_final["hadm_id"].astype(int).unique().tolist(),
+        mv_items=(221906, 221289, 221662, 221653),
+        cv_items=(30047, 30120, 30044, 30119, 30309),
+        out_col="vaso_start_hour",
+        seconds_per_unit=3600,
+    )
     print(f"✓ Detected vasopressors in {len(vasopressor_df):,} admissions")
 
     # Prepare lactate time series for outcome lookup (from raw lactate_df, not pivoted)
@@ -286,9 +294,9 @@ if len(vitals_df) > 0 and len(labs_df) > 0:
                 vaso_start = vasopressor_df[vasopressor_df["hadm_id"] == hadm_id]["vaso_start_hour"].iloc[0]
                 vasopressor_in_window = prediction_start <= vaso_start <= prediction_end
 
-            # Circulatory failure: (hypotension OR vasopressor) AND (high lactate OR no lactate data)
-            # More permissive: if no lactate data in window, count hypotension/vasopressor alone
-            target = int((future_hypotension or vasopressor_in_window) and (future_lactate or len(future_lactate_df) == 0))
+            # Circulatory failure (Hyland et al., 2020): lactate >= 2 mmol/L AND
+            # (MAP <= 65 mmHg OR vasopressor/inotrope) within the prediction window
+            target = int(future_lactate and (future_hypotension or vasopressor_in_window))
 
             row = grp.iloc[i].to_dict()
             row["target_circulatory_failure"] = target

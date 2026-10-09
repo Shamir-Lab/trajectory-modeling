@@ -44,6 +44,7 @@ from .analysis_utils import (
     load_named_table,
     safe_left_merge,
     biomarker_summary_stats,
+    encode_gender,
     organize_feature_sets,
     get_dataset_config,
     get_default_models,
@@ -552,7 +553,10 @@ class TrajectoryAnalysis:
         
         # Organize features
         windowing_col = self._detect_windowing_col(dataset)
+        dataset = encode_gender(dataset.copy())
         feature_sets = organize_feature_sets(dataset, self.id_col, windowing_col)
+        for group in ("static", "dynamic", "summary", "trajectory"):
+            logger.info(f"  {group} features ({len(feature_sets[group])}): {feature_sets[group]}")
 
         # Notebook-style trajectory preprocessing: temporal carry-forward by patient.
         dataset_model = dataset.copy()

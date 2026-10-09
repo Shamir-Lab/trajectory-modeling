@@ -26,6 +26,10 @@ from common import (
     fetch_vitals_labs,
     ensure_time_day,
     aggregate_vitals_labs,
+    ffill_within_stay,
+    ICU_LOS_SQL,
+    MIN_TARGET_MEASUREMENTS,
+    MISSINGNESS_THRESHOLD,
     drop_high_missing_columns,
 )
 
@@ -39,7 +43,7 @@ print("=" * 80)
 paths = MIMICPaths()
 conn = connect_db(paths.db_path)
 
-hadm_query = """
+hadm_query = f"""
 WITH ventilated_patients AS (
     SELECT DISTINCT
         i.hadm_id::INTEGER AS hadm_id,
@@ -68,7 +72,7 @@ INNER JOIN admissions a ON i.hadm_id = a.hadm_id
 INNER JOIN ventilated_patients vp ON i.hadm_id = vp.hadm_id
 WHERE 
     CAST((a.admittime::DATE - p.dob::DATE) / 365.25 AS INT) BETWEEN 18 AND 90
-    AND CAST(a.dischtime::DATE - a.admittime::DATE AS REAL) >= 2.0
+    AND {ICU_LOS_SQL}
 """
 
 hadm_df = conn.execute(hadm_query).fetchdf()
@@ -125,6 +129,14 @@ else:
     bg_df["pf_ratio"] = bg_df["pao2"] / bg_df["fio2"]
     bg_df = bg_df[(bg_df["pf_ratio"] >= 50) & (bg_df["pf_ratio"] <= 600)]
     bg_df = ensure_time_day(bg_df)
+
+    # Keep admissions with enough measurements of the target clinical parameter
+    pf_counts = bg_df.groupby("hadm_id").size()
+    pf_valid = pf_counts[pf_counts >= MIN_TARGET_MEASUREMENTS].index
+    bg_df = bg_df[bg_df["hadm_id"].isin(pf_valid)].copy()
+    hadm_df = hadm_df[hadm_df["hadm_id"].isin(pf_valid)].copy()
+    hadm_ids = hadm_df["hadm_id"].astype(int).tolist()
+    print(f"✓ {len(pf_valid):,} admissions with >= {MIN_TARGET_MEASUREMENTS} P/F measurements")
 
     # Baseline P/F ratio (first 24h after vent start)
     bg_df = bg_df.merge(hadm_df[["hadm_id", "vent_start"]], on="hadm_id", how="left")
@@ -239,11 +251,11 @@ else:
 
         # Forward-fill imputation within each admission
         hadm_pred = hadm_pred.sort_values(["hadm_id", "time_day"])
-        hadm_pred = hadm_pred.set_index("hadm_id").groupby(level=0).ffill().reset_index()
+        hadm_pred = ffill_within_stay(hadm_pred, "hadm_id")
 
-        # Drop columns with >20% missing (eICU-style)
+        # Drop columns with >70% missing
         missing_pct = hadm_pred.isnull().mean()
-        cols_to_drop = missing_pct[missing_pct > 0.2].index.tolist()
+        cols_to_drop = missing_pct[missing_pct > MISSINGNESS_THRESHOLD].index.tolist()
         for col in ["hadm_id", "time_day", "pf_ratio", "pf_improvement", "hospital_expire_flag", "age", "gender", "baseline_pf_ratio"]:
             if col in cols_to_drop:
                 cols_to_drop.remove(col)

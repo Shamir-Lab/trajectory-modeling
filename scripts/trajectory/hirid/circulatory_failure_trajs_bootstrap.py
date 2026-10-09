@@ -30,9 +30,9 @@ BIOMARKERS = {
     'lactate': {
         'file': 'lactate_timeseries.csv',
         'value_col': 'lactate',
-        'flat_thr': 0.03,
-        'decline_thr': 0.12,
-        'nonlinear_gap': 0.18,
+        'flat_thr': 0.04,
+        'decline_thr': 0.15,
+        'nonlinear_gap': 0.2,
         'class_func': pos_flags_from_traj,
         'traj_types': ('stable', 'gradual_increase', 'rapid_increase'),
         'label_map': {'nonprogression': 'stable', 'linear': 'gradual_increase', 'nonlinear': 'rapid_increase'},
@@ -40,9 +40,9 @@ BIOMARKERS = {
     'heartrate': {
         'file': 'heartrate_timeseries.csv',
         'value_col': 'heartrate',
-        'flat_thr': 1.2,
-        'decline_thr': 4.5,
-        'nonlinear_gap': 7.0,
+        'flat_thr': 1.5,
+        'decline_thr': 6.0,
+        'nonlinear_gap': 10.0,
         'class_func': pos_flags_from_traj,
         'traj_types': ('stable', 'gradual_increase', 'rapid_increase'),
         'label_map': {'nonprogression': 'stable', 'linear': 'gradual_increase', 'nonlinear': 'rapid_increase'},
@@ -50,9 +50,9 @@ BIOMARKERS = {
     'systolic': {
         'file': 'systolic_timeseries.csv',
         'value_col': 'systolic',
-        'flat_thr': -1.2,
-        'decline_thr': -4.5,
-        'nonlinear_gap': 7.0,
+        'flat_thr': -1.5,
+        'decline_thr': -6.0,
+        'nonlinear_gap': 8.0,
         'class_func': flags_from_traj,
         'traj_types': ('stable', 'gradual_decline', 'rapid_decline'),
         'label_map': {'nonprogression': 'stable', 'linear': 'gradual_decline', 'nonlinear': 'rapid_decline'},
@@ -271,7 +271,7 @@ def main():
                         help='Optional path to save prediction dataset merged with probabilities')
     parser.add_argument('--window-hours', type=float, default=12.0,
                         help='Lookback window in hours (default: 12.0)')
-    parser.add_argument('--n-bootstrap', type=int, default=1000,
+    parser.add_argument('--n-bootstrap', type=int, default=200,
                         help='Number of bootstrap samples (default: 1000)')
     parser.add_argument('--n-batches', type=int, default=8,
                         help='Number of batches for processing (default: 8)')
