@@ -32,15 +32,19 @@ UNBOUNDED_FFILL_COLS = ("age", "gender")
 
 def ffill_within_stay(df: pd.DataFrame, id_col: str) -> pd.DataFrame:
     """Forward-fill within each stay (df sorted by id and time); see FFILL_LIMIT."""
+    # Positional, because the aggregated tables can hold duplicate column names
+    # (e.g. glucose as both a vital sign and a lab).
     df = df.copy()
-    cols = [c for c in df.columns if c != id_col]
-    unbounded = [c for c in cols if c in UNBOUNDED_FFILL_COLS or c.lower().startswith("weight")]
-    capped = [c for c in cols if c not in unbounded]
-    grouped = df.groupby(id_col, sort=False)
-    if capped:
-        df[capped] = grouped[capped].ffill(limit=FFILL_LIMIT)
-    if unbounded:
-        df[unbounded] = grouped[unbounded].ffill()
+    groups = df[id_col].to_numpy()
+    unbounded = [str(c) in UNBOUNDED_FFILL_COLS or str(c).lower().startswith("weight") for c in df.columns]
+    capped_pos = [i for i, c in enumerate(df.columns) if c != id_col and not unbounded[i]]
+    unbounded_pos = [i for i, c in enumerate(df.columns) if c != id_col and unbounded[i]]
+    if capped_pos:
+        filled = df.iloc[:, capped_pos].groupby(groups, sort=False).ffill(limit=FFILL_LIMIT)
+        df.iloc[:, capped_pos] = filled.to_numpy()
+    if unbounded_pos:
+        filled = df.iloc[:, unbounded_pos].groupby(groups, sort=False).ffill()
+        df.iloc[:, unbounded_pos] = filled.to_numpy()
     return df
 
 
