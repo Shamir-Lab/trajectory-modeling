@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.abspath('src'))
 
 from eicu_loader import EICULoader, ffill_within_stay, MIN_TARGET_MEASUREMENTS, MISSINGNESS_THRESHOLD
 
-OUTPUT_DIR = Path("/home/gaga/data/physionet/eicu/circulatory_failure")
+OUTPUT_DIR = Path(os.environ.get("TRAJ_DATA_ROOT", "/home/gaga/data/physionet")) / "eicu" / "circulatory_failure"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Outcome configuration (Nature Medicine 2020): predict CF within next 8h
