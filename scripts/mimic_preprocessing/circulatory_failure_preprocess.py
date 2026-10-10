@@ -269,8 +269,10 @@ if len(vitals_df) > 0 and len(labs_df) > 0:
                 excluded["already_failure"] += 1
                 continue
 
-            prediction_start = current_time + PREDICTION_GAP_HOURS
-            prediction_end = current_time + PREDICTION_GAP_HOURS + PREDICTION_WINDOW_HOURS
+            # +1 hour shift: the hourly features summarize the whole index hour, so the gap
+            # and prediction window start at its end (as for the daily tasks)
+            prediction_start = current_time + PREDICTION_GAP_HOURS + 1
+            prediction_end = current_time + PREDICTION_GAP_HOURS + PREDICTION_WINDOW_HOURS + 1
 
             future_grp = grp[(grp["time_hour"] >= prediction_start) & (grp["time_hour"] <= prediction_end)]
             if len(future_grp) == 0:
