@@ -960,13 +960,15 @@ class TrajectoryAnalysis:
         aggregated = {}
         fold_rows: list[dict] = []
         oof_rows_all: list[dict] = []
+        # Collect OOF rows once per worker result (not once per model x feature set)
+        for repeat_dict in repeat_results:
+            if isinstance(repeat_dict, dict) and "oof" in repeat_dict:
+                oof_rows_all.extend(repeat_dict.get("oof", []))
         for model_name in models:
             aggregated[model_name] = {}
             for fs_name in feature_configs:
                 all_metrics = []
                 for repeat_dict in repeat_results:
-                    if isinstance(repeat_dict, dict) and "oof" in repeat_dict:
-                        oof_rows_all.extend(repeat_dict.get("oof", []))
                     metrics_root = repeat_dict.get("metrics", repeat_dict)
                     if model_name in metrics_root and fs_name in metrics_root[model_name]:
                         all_metrics.extend(metrics_root[model_name][fs_name])
