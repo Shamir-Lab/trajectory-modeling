@@ -340,10 +340,15 @@ def build_metrics_table() -> pd.DataFrame:
 
 
 def main() -> None:
+    global DATA_ROOT, RESULTS_ROOT
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out-dir", default="results/tables", help="Directory for the two CSVs")
     parser.add_argument("--skip-cohort", action="store_true", help="Only rebuild the CV metrics table")
+    parser.add_argument("--data-root", default=str(DATA_ROOT), help="Root of the prediction datasets")
+    parser.add_argument("--results-root", default=str(RESULTS_ROOT), help="Root of the CV results")
     args = parser.parse_args()
+
+    DATA_ROOT, RESULTS_ROOT = Path(args.data_root), Path(args.results_root)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
     out_dir = Path(args.out_dir)
