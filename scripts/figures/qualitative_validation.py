@@ -100,9 +100,9 @@ EVAL_CAP = 2000        # candidates actually inspected against the raw data per 
 ARCHETYPES = ("stable", "gradual", "nonlinear")
 
 COLUMN_TITLES = {
-    "stable": "Stable / non-progression",
-    "gradual": "Gradual change",
-    "nonlinear": "Non-linear change",
+    "stable": "Stable",
+    "gradual": "Linear progression",
+    "nonlinear": "Non-linear progression",
 }
 
 CLASS_PALETTE = {
@@ -192,11 +192,8 @@ class SeriesSpec:
         return os.path.abspath(self.prob_file) == os.path.abspath(self.ts_file)
 
     def archetype_label(self, archetype: str) -> str:
-        if archetype == "stable":
-            return "Stable"
-        if archetype == "gradual":
-            return f"Gradual {self.change_word}"
-        return f"Non-linear {self.change_word}"
+        # The type names of the thesis, the same for every parameter.
+        return COLUMN_TITLES[archetype]
 
 
 def _p(*parts: str) -> str:
@@ -871,7 +868,7 @@ def plot_task_figure(task: str, rows: list[SeriesSpec], examples: dict, ts_by_ke
         axes_grid[-1][c].set_xlabel(f"Time relative to anchor time ({unit_word})", fontsize=9.5)
 
     fig.suptitle(
-        f"Qualitative validation of trajectory archetypes — {meta['title']}",
+        f"Qualitative validation of trajectory archetypes: {meta['title']}",
         fontsize=15, fontweight="bold", y=1 - (0.34 / fig_h),
     )
     span_txt = (f" and measurements spanning > {min_span:g} {unit_word}"
@@ -943,7 +940,7 @@ def plot_series_figure(spec: SeriesSpec, examples: dict, ts_df: pd.DataFrame,
 
     fig.suptitle(
         f"{DATASET_LABELS.get(spec.dataset, spec.dataset)} · "
-        f"{TASK_META[spec.task]['title']} — {spec.display_name}",
+        f"{TASK_META[spec.task]['title']}: {spec.display_name}",
         fontsize=13, fontweight="bold", y=1.04,
     )
     fig.tight_layout()
