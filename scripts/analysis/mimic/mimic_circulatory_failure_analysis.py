@@ -455,7 +455,8 @@ def run_cv(dataset, target_col, id_col, feature_sets, n_repeats=10, n_folds=5, s
             dataset_repeat = dataset_clean.iloc[shuffle_idx].reset_index(drop=True)
             y_repeat = y.iloc[shuffle_idx].reset_index(drop=True)
             groups_repeat = groups.iloc[shuffle_idx].reset_index(drop=True)
-            gkf = GroupKFold(n_splits=n_folds)
+            # GroupKFold ignores row order, so each repeat shuffles the groups itself.
+            gkf = GroupKFold(n_splits=n_folds, shuffle=True, random_state=seed + repeat)
 
             rep_auc = []
             rep_aupr = []

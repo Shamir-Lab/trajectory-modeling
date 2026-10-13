@@ -825,7 +825,8 @@ class TrajectoryAnalysis:
             id_rep = id_all[shuffle_idx]
             win_rep = win_all[shuffle_idx]
 
-            gkf = GroupKFold(n_splits=n_splits)
+            # GroupKFold ignores row order, so each repeat shuffles the groups itself.
+            gkf = GroupKFold(n_splits=n_splits, shuffle=True, random_state=SEED + repeat_idx)
 
             for fold_idx, (train_idx, test_idx) in enumerate(gkf.split(X_rep, y_rep, groups_rep)):
                 X_train, X_test = X_rep.iloc[train_idx], X_rep.iloc[test_idx]
@@ -893,7 +894,7 @@ class TrajectoryAnalysis:
                 id_rep = id_all[shuffle_idx]
                 win_rep = win_all[shuffle_idx]
 
-                gkf = GroupKFold(n_splits=n_splits)
+                gkf = GroupKFold(n_splits=n_splits, shuffle=True, random_state=SEED + repeat_idx)
                 for fold_idx, (train_idx, test_idx) in enumerate(gkf.split(X_rep, y_rep, groups_rep)):
                     X_train, X_test = X_rep.iloc[train_idx], X_rep.iloc[test_idx]
                     y_train, y_test = y_rep[train_idx], y_rep[test_idx]

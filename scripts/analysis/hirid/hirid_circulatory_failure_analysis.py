@@ -308,7 +308,8 @@ def _run_one_repeat(
     y_repeat = y.iloc[shuffle_idx].reset_index(drop=True)
     groups_repeat = groups.iloc[shuffle_idx].reset_index(drop=True)
 
-    gkf = GroupKFold(n_splits=n_folds)
+    # GroupKFold ignores row order, so each repeat shuffles the groups itself.
+    gkf = GroupKFold(n_splits=n_folds, shuffle=True, random_state=repeat_seed)
     rep_auc, rep_aupr = [], []
     rep_fold_rows = []
 

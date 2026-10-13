@@ -427,7 +427,8 @@ def run_cv(dataset, target_col, id_col, feature_sets, train_n_jobs=1, train_back
                 y_repeat = y.iloc[shuffle_idx].reset_index(drop=True)
                 groups_repeat = groups.iloc[shuffle_idx].reset_index(drop=True)
 
-                gkf = GroupKFold(n_splits=n_folds)
+                # GroupKFold ignores row order, so each repeat shuffles the groups itself.
+                gkf = GroupKFold(n_splits=n_folds, shuffle=True, random_state=repeat_seed)
                 fold_aucs, fold_auprs = [], []
 
                 for fold_idx, (train_idx, test_idx) in enumerate(gkf.split(dataset_repeat, y_repeat, groups_repeat), 1):
