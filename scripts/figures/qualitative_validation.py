@@ -5,7 +5,7 @@ Qualitative Validation Figures — Trajectory Modeling Framework
 One figure per prediction task. Rows are (dataset x clinical parameter),
 grouped and bracketed by dataset; columns are the three trajectory archetypes
 (stable / gradual change / non-linear change). Each panel overlays the raw EHR
-measurements of two patients whose posterior probability for that archetype is
+measurements of two patients whose type score for that archetype is
 high, so the reader can judge whether the archetype label matches the observed
 measurement pattern.
 
@@ -763,7 +763,8 @@ def _draw_panel(ax: plt.Axes, spec: SeriesSpec, archetype: str,
     sns.despine(ax=ax)
 
     if probs_shown:
-        txt = "  ".join(f"p{i + 1}={p:.2f}" for i, p in enumerate(probs_shown))
+        # Type scores of patient 1 and patient 2 (the thesis notation \hat{T}).
+        txt = r"$\hat{T}$ = " + ", ".join(f"{p:.2f}" for p in probs_shown)
         ax.text(0.025, 0.97, txt, transform=ax.transAxes, fontsize=7.2,
                 va="top", ha="left", color=color, zorder=6,
                 bbox=dict(boxstyle="round,pad=0.28", facecolor="white",
@@ -874,7 +875,7 @@ def plot_task_figure(task: str, rows: list[SeriesSpec], examples: dict, ts_by_ke
     fig.text(
         0.5, 1 - (0.76 / fig_h),
         f"{meta['window']:g}-{unit_word[:-1]} lookback windows · "
-        f"raw measurements of two patients per panel, selected at posterior probability "
+        f"raw measurements of two patients per panel, selected at type score "
         f"≥ {threshold:.2f}{span_txt} "
         f"· y-axis shared per clinical parameter across datasets",
         ha="center", va="center", fontsize=9.8, color="#4A4A4A",
@@ -962,7 +963,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--datasets", nargs="+", default=DATASET_ORDER,
                    choices=DATASET_ORDER, help="Datasets to include (default: all)")
     p.add_argument("--threshold", type=float, default=HIGH_CONF_THRESHOLD,
-                   help=f"Min posterior probability for a window (default: {HIGH_CONF_THRESHOLD})")
+                   help=f"Min type score for a window (default: {HIGH_CONF_THRESHOLD})")
     p.add_argument("--n-examples", type=int, default=N_EXAMPLES_PER_CLASS,
                    help=f"Patients per panel (default: {N_EXAMPLES_PER_CLASS})")
     p.add_argument("--min-span", type=float, default=MIN_TIME_SPAN,
