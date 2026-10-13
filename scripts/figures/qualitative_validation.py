@@ -4,7 +4,7 @@ Qualitative Validation Figures — Trajectory Modeling Framework
 
 One figure per prediction task. Rows are (dataset x clinical parameter),
 grouped and bracketed by dataset; columns are the three trajectory archetypes
-(stable / gradual change / non-linear change). Each panel overlays the raw EHR
+(stable / linear progression / non-linear progression). Each panel overlays the raw EHR
 measurements of two patients whose type score for that archetype is
 high, so the reader can judge whether the archetype label matches the observed
 measurement pattern.
@@ -904,8 +904,8 @@ def plot_task_figure(task: str, rows: list[SeriesSpec], examples: dict, ts_by_ke
     fig.text(0.5, 0.52 / fig_h, thr_lines, ha="center", va="center",
              fontsize=8.2, color="#6A6A6A")
     fig.text(0.5, 0.24 / fig_h,
-             "Row labels give the clinical parameter; ↑ / ↓ marks the direction of that "
-             "parameter's gradual and non-linear archetypes.",
+             "Row labels give the clinical parameter; ↑ / ↓ marks the direction of "
+             "progression of that parameter.",
              ha="center", va="center", fontsize=8.2, color="#6A6A6A")
 
     paths = []
