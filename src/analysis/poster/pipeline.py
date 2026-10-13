@@ -13,6 +13,16 @@ from .model_selector import select_best_model_by_aupr
 from .plot_panels import plot_best_model_panel, plot_main_panel
 from .stats_significance import compare_pairwise
 
+# Dataset and task names as in the thesis (Table 2.1).
+DATASET_TITLES = {"mimic": "MIMIC-III", "eicu": "eICU", "hirid": "HiRID"}
+TASK_TITLES = {
+    "sepsis": "Septic Shock",
+    "liver": "Liver ACLF",
+    "aki": "AKI Stage 3",
+    "ventilator": "Ventilator Weaning",
+    "circulatory_failure": "Circulatory Failure",
+}
+
 logger = logging.getLogger(__name__)
 
 
@@ -139,7 +149,8 @@ def run_poster_pipeline(config_path: str | Path) -> None:
             out_dir = _task_output_dir(cfg, dataset, task)
             out_dir.mkdir(parents=True, exist_ok=True)
 
-            title_prefix = f"{dataset.upper()} {task.replace('_', ' ').title()}"
+            title_prefix = (f"{DATASET_TITLES.get(dataset, dataset)} "
+                            f"{TASK_TITLES.get(task, task.replace('_', ' ').title())}")
             plot_main_panel(
                 fold_df=fold_sel,
                 canonical_order=canonical_order,
