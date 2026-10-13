@@ -142,6 +142,10 @@ PARAM_COLORS = {
     "tau_decline": "#eb6834",
     "gamma_gap": "#1baf7a",
 }
+# Names shown in figures. The thesis calls the increase threshold tau_inc
+# (w.l.o.g., an increase indicates progression); "tau_decline" stays the
+# internal name used in the result CSVs.
+PARAM_LABELS = {"tau_flat": "tau_flat", "tau_decline": "tau_inc", "gamma_gap": "gamma_gap"}
 
 
 # ============================================================================
@@ -835,7 +839,7 @@ def draw_marker_panels(
                           ).sort_values("perturbation_factor")
 
         ax_flip.plot(sub["perturbation_factor"], sub["pct_primary_archetype_flips"], marker="o",
-                     markersize=6, linewidth=2, color=color, label=param)
+                     markersize=6, linewidth=2, color=color, label=PARAM_LABELS[param])
 
         if ax_delta is not None:
             delta = sub["median_aupr"] - base_aupr

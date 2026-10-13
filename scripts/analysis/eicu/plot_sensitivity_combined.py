@@ -60,6 +60,7 @@ from eicu_sepsis_sensitivity_analysis import (  # noqa: E402
     DEFAULT_FEATURE_SET_NAME,
     DEFAULT_MODEL_NAME,
     PARAM_COLORS,
+    PARAM_LABELS,
     TRAJECTORY_ABLATED_FEATURE_SET_NAME,
     draw_marker_panels,
     select_model,
@@ -208,7 +209,7 @@ def plot_trajectory_value(
             sub = pd.concat([sub, baseline_row.to_frame().T], ignore_index=True)
             sub = sub.astype({"perturbation_factor": float, "gain_aupr": float}).sort_values("perturbation_factor")
             ax.plot(sub["perturbation_factor"], sub["gain_aupr"], marker="o", markersize=6,
-                    linewidth=2, color=color, label=param)
+                    linewidth=2, color=color, label=PARAM_LABELS[param])
 
         ax.set_title(MARKER_LABEL[marker], fontsize=13, fontweight="bold")
         ax.set_xlabel("Perturbation factor (× baseline threshold)")
@@ -326,7 +327,7 @@ def plot_model_robustness(
         ax.set_xlabel(f"{metric_label} at worst-case extreme\n(← worse    better →)")
 
     ax_aupr.set_yticks(range(n_rows))
-    ax_aupr.set_yticklabels([f"{MARKER_LABEL[m]} · {p}" for m, p in combo_order], fontsize=10)
+    ax_aupr.set_yticklabels([f"{MARKER_LABEL[m]} · {PARAM_LABELS[p]}" for m, p in combo_order], fontsize=10)
 
     # Fixed figure-fraction placement throughout this header, not axes-relative
     # bbox_to_anchor / tight_layout: the first version of this figure had the
@@ -336,7 +337,7 @@ def plot_model_robustness(
     # neighbor bug fixed in plot_sensitivity_overview, in a new spot again.
     fig.suptitle("Worst-case sensitivity by classifier", fontsize=13.5, y=0.975, x=0.01, ha="left")
 
-    param_handles = [plt.Line2D([0], [0], marker="o", color=c, linestyle="", markersize=8, label=p)
+    param_handles = [plt.Line2D([0], [0], marker="o", color=c, linestyle="", markersize=8, label=PARAM_LABELS[p])
                       for p, c in PARAM_COLORS.items()]
     model_handles = [plt.Line2D([0], [0], marker=m, color="#5a5a56", linestyle="", markersize=8, label=name)
                       for name, m in MODEL_MARKERS.items()]
@@ -487,9 +488,9 @@ def plot_feature_set_stability(
         _draw_panel(axes[1, col], model_name, "auroc")
         axes[1, col].set_title("best by AUROC", fontsize=10.5, loc="left", pad=8)
     axes[0, 0].set_yticks(range(n_rows))
-    axes[0, 0].set_yticklabels([f"{MARKER_LABEL[m]} · {p}" for m, p in combo_order], fontsize=9)
+    axes[0, 0].set_yticklabels([f"{MARKER_LABEL[m]} · {PARAM_LABELS[p]}" for m, p in combo_order], fontsize=9)
     axes[1, 0].set_yticks(range(n_rows))
-    axes[1, 0].set_yticklabels([f"{MARKER_LABEL[m]} · {p}" for m, p in combo_order], fontsize=9)
+    axes[1, 0].set_yticklabels([f"{MARKER_LABEL[m]} · {PARAM_LABELS[p]}" for m, p in combo_order], fontsize=9)
 
     fig.suptitle("Winning feature set by classifier", fontsize=13, y=0.98, x=0.01, ha="left")
 
