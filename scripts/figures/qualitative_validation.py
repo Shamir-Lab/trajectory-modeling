@@ -85,10 +85,6 @@ HIGH_CONF_THRESHOLD = 0.75
 # tasks, > 2 hours for circulatory failure. Enforced at every relaxation stage —
 # a panel is left empty rather than filled with a window that spans an afternoon.
 MIN_TIME_SPAN = 2.0
-# The window ends with the anchor bin (day or hour), aggregated over its whole
-# unit, so the anchor time (time of prediction) is the end of that bin; the
-# x-axis is drawn relative to it.
-ANCHOR_OFFSET = 1.0
 N_EXAMPLES_PER_CLASS = 2
 MAX_STABLE_REL_RANGE = 0.30
 MIN_TREND_STRENGTH = 0.15
@@ -729,7 +725,8 @@ def _draw_panel(ax: plt.Axes, spec: SeriesSpec, archetype: str,
         win = get_window_measurements(ts_df, pid, wt, spec)
         if win.empty:
             continue
-        x = win["rel_time"].to_numpy(dtype=float) - ANCHOR_OFFSET
+        # 0 is the anchor time a; the index day [a, a+1) is the last unit of the window.
+        x = win["rel_time"].to_numpy(dtype=float)
         y = win[spec.value_col].to_numpy(dtype=float)
         probs_shown.append(prob)
 
@@ -756,7 +753,7 @@ def _draw_panel(ax: plt.Axes, spec: SeriesSpec, archetype: str,
                linewidth=0.9, alpha=0.7, zorder=1)
     ax.axvline(0, color="#424242", linewidth=0.7, alpha=0.25, zorder=1)
 
-    ax.set_xlim(-spec.window - ANCHOR_OFFSET - 0.35, 0.35)
+    ax.set_xlim(-spec.window - 0.35, 1.35)
     ax.set_ylim(*ylim)
     ax.tick_params(labelsize=8)
     if not show_xticklabels:
