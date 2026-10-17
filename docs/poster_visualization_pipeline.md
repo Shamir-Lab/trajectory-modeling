@@ -14,7 +14,13 @@ This pipeline generates poster-ready figure panels from existing cross-validatio
 Use YAML configs in `configs/poster/`.
 
 Default:
-- `configs/poster/mimic_eicu_default.yaml`
+- `configs/poster/mimic_eicu_default.yaml` (MIMIC-III, eICU and HiRID; all tasks found under
+  `results/{dataset}/`). The thesis boxplots were made with this config, with `inputs.results_root`
+  and `outputs.root` pointing to the gathered results of the thesis run.
+
+```bash
+python scripts/analysis/poster/run_poster_pipeline.py --config configs/poster/mimic_eicu_default.yaml
+```
 
 ## Input contract
 
@@ -23,6 +29,9 @@ For each dataset/task folder under `results/{dataset}/{task}`:
 - `{task}_cv_results.csv`
 - `{task}_cv_results_fold_metrics.csv`
 - `{task}_cv_results_metadata.json` (optional)
+
+The circulatory-failure scripts write `{dataset}_{task}_summary.csv` and
+`{dataset}_{task}_fold_results.parquet` instead; both naming schemes are read.
 
 Expected fold metrics columns:
 

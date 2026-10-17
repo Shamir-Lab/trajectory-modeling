@@ -85,23 +85,45 @@ udocker run \
         --output-dir /out/hirid
 
 # MIMIC circulatory failure trajectories
+# (the MIMIC and eICU scripts write their outputs next to the inputs, so the data mount must be writable)
 udocker run \
-    -v /home/gaga/data/physionet:/data:ro \
-    -v /home/gaga/tamarw1/results:/out \
+    -v "$DATA_ROOT":/data \
+    -e TRAJ_DATA_ROOT=/data \
     trajectory-modeling \
     python /traj/scripts/trajectory/mimic/circulatory_failure_trajs.py \
         --sampler pymc \
-        --input-dir /data/mimic
+        --biomarker all \
+        --data-dir /data/mimic/circulatory_failure \
+        --pred-dataset /data/mimic/circulatory_failure/circulatory_failure_prediction_dataset.csv
 
-# eICU trajectories
+# eICU circulatory failure trajectories
 udocker run \
-    -v /home/gaga/data/physionet:/data:ro \
-    -v /home/gaga/tamarw1/results:/out \
+    -v "$DATA_ROOT":/data \
+    -e TRAJ_DATA_ROOT=/data \
     trajectory-modeling \
     python /traj/scripts/trajectory/eicu/circulatory_failure_trajs.py \
         --sampler pymc \
-        --input-dir /data/eicu
+        --data-dir /data/eicu/circulatory_failure \
+        --pred-dataset /data/eicu/circulatory_failure/circulatory_failure_prediction_dataset.csv
 ```
+
+### Batch drivers
+
+The full circulatory-failure runs are long (days for MIMIC), so they were run cohort split by
+cohort split with sequential drivers that skip finished splits and retry failed ones:
+
+| Driver | Computes |
+| --- | --- |
+| `docker/run_cf_batches.sh --dataset {mimic,eicu,hirid}` | MCMC circulatory-failure trajectories |
+| `docker/run_hirid_cf_batches.sh` | MCMC circulatory-failure trajectories, HiRID only |
+| `docker/run_mimic_cf_bootstrap_batches.sh --cohorts 5-11` | bootstrap circulatory-failure trajectories, MIMIC |
+| `docker/run_eicu_sepsis_bayes_slope_cache.sh` | MCMC slope cache of the eICU sepsis sensitivity analysis |
+
+Each script's header lists its options (`--dry-run` shows the plan without running anything).
+`scripts/watchdog/cf_batch_watchdog.sh` can be run from cron to restart `run_cf_batches.sh`
+after a server reboot. The split outputs are combined with `scripts/slurm/<dataset>/merge_circulatory_failure_bayes.sh`
+or `merge_circulatory_failure_bootstrap.sh` (`scripts/slurm/eicu/merge_eicu_sepsis_bayes_slope_cache.sh`
+for the slope cache).
 
 ### External users (Docker)
 
