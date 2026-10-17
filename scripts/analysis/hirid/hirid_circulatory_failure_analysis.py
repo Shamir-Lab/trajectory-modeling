@@ -1,12 +1,9 @@
 #!/usr/bin/env python
 """
-HiRiD circulatory failure analysis script (notebook-to-script version).
-
-This script reproduces the core analysis from:
-  scripts/notebooks/hirid/circulatory_failure_analysis.ipynb
+HiRiD circulatory failure analysis script.
 
 Run:
-  python scripts/hirid_circulatory_failure_analysis.py
+  python scripts/analysis/hirid/hirid_circulatory_failure_analysis.py
 """
 
 from __future__ import annotations

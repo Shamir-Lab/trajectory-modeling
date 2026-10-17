@@ -156,7 +156,6 @@ def aggregate_vitals_labs(vitals_df: pd.DataFrame, labs_df: pd.DataFrame,
                           vital_meta: pd.DataFrame, labs_meta: pd.DataFrame) -> pd.DataFrame:
     """
     Aggregate vitals and labs to daily min/max/mean.
-    Mirrors the notebook_utils implementation to keep preprocessing consistent.
     """
     vitals_df = vitals_df.merge(vital_meta, on='itemid', how='left')
     vitals_df = vitals_df[vitals_df['valuenum'].between(vitals_df['min'], vitals_df['max'], inclusive='both')]
